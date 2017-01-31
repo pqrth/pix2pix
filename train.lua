@@ -109,6 +109,7 @@ function defineG(input_nc, output_nc, ngf)
     if     opt.which_model_netG == "encoder_decoder" then netG = defineG_encoder_decoder(input_nc, output_nc, ngf)
     elseif opt.which_model_netG == "unet" then netG = defineG_unet(input_nc, output_nc, ngf)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
+    elseif opt.which_model_netG == "unet_exposure" then netG = defineG_unet_exposure(input_nc, output_nc, ngf)
     else error("unsupported netG model")
     end
    
