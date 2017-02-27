@@ -178,7 +178,7 @@ do
         end
         if self.weight then
           self.weight:fill(0)
-          local lp = image.laplacian(self.weight:size()[2])
+          local lp = image.laplacian(self.weight:size()[3])
           for i=1,self.weight:size()[1] do
             self.weight[i][i]:copy(lp)
           end 
