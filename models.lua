@@ -190,6 +190,39 @@ do
       end
 end
 
+--[[
+A custom convolution layer for Gaussian filter.
+This is a fixed layer i.e. weights do not update.
+]]--
+do
+    -- override init to set appropriate constraints on dimensions
+    local GaussianConv, parent = torch.class('nn.GaussianConv', 'nn.SpatialConvolution')
+      function GaussianConv:__init(nInputPlane, nOutputPlane, k)
+        k = k or 3
+        if k < 3 then k = 3 end
+        pad = math.ceil((k-1)/2)
+        parent.__init(self,nInputPlane, nOutputPlane, k, k, 1, 1, pad, pad)
+        self:reset()
+      end
+
+      -- overide reset() to set weights as Gaussian kernel
+      function GaussianConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          local lp = image.gaussian(self.weight:size()[3])
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(lp)
+          end
+        end
+      end
+
+      -- empty accGradParameters() to prevent any weight updates
+      function GaussianConv:accGradParameters(input, gradOutput, scale)
+      end
+end
 
 --[[
 A custom convolution layer for applying Sobel filter in X-direction.
@@ -322,7 +355,7 @@ function defineG_unet_exposure_shadow_map(input_nc, output_nc, ngf)
     local d8 = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.ReLU(true)
     -- input is (nc) x 256 x 256
 
-    local d8_ = d8 - nn.AddConstant(1) -- [1, inf)
+    local d8_ = d8 - nn.AddConstant(1) - nn.Power(-1) - nn.GaussianConv(output_nc, output_nc) - nn.Power(-1) -- [1, inf)
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
     local o1_ = {input_deprocess,d8_} - nn.CMulTable()
     local o2 = o1_ - nn.Clamp(0,1) - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
