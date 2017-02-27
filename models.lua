@@ -1,4 +1,5 @@
 require 'nngraph'
+require 'image'
 
 function defineG_encoder_decoder(input_nc, output_nc, ngf)
     local netG = nil 
@@ -103,7 +104,7 @@ function defineG_unet_exposure(input_nc, output_nc, ngf)
     -- input is (nc) x 256 x 256
     local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
     -- input is (ngf) x 128 x 128
-    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4	, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
     -- input is (ngf * 2) x 64 x 64
     local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
     -- input is (ngf * 4) x 32 x 32
@@ -144,10 +145,202 @@ function defineG_unet_exposure(input_nc, output_nc, ngf)
 
     --local o1 = d8 - nn.Tanh()
     local d8_ = d8 - nn.AddConstant(1)
-    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)
+    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
     local o1_ = {input_deprocess,d8_} - nn.CMulTable()
-    local o2 = o1_ - nn.Tanh() - nn.MulConstant(2) - nn.AddConstant(-1)
+    local o2 = o1_ - nn.Clamp(0,1) - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
     netG = nn.gModule({input},{o2})
+
+    --graph.dot(netG.fg,'netG')
+
+    return netG
+end
+
+
+--[[
+A custom convolution layer for performing LOG.
+This is a fixed layer i.e. weights do not update.
+]]--
+do
+    -- override init to set appropriate constraints on dimensions
+    local LaplacianConv, parent = torch.class('nn.LaplacianConv', 'nn.SpatialConvolution')
+      function LaplacianConv:__init(nInputPlane, nOutputPlane, k)      
+        k = k or 3
+        if k < 3 then k = 3 end
+        pad = math.ceil((k-1)/2)
+        parent.__init(self,nInputPlane, nOutputPlane, k, k, 1, 1, pad, pad)
+        self:reset()
+      end
+
+      -- overide reset() to set weights as LOG kernel
+      function LaplacianConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          local lp = image.laplacian(self.weight:size()[2])
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(lp)
+          end 
+        end
+      end
+    
+      -- empty accGradParameters() to prevent any weight updates
+      function LaplacianConv:accGradParameters(input, gradOutput, scale)
+      end
+end
+
+
+--[[
+A custom convolution layer for applying Sobel filter in X-direction.
+This is a fixed layer i.e. weights do not update.
+]]--
+do
+    local SobelXConv, parent = torch.class('nn.SobelXConv', 'nn.SpatialConvolution')
+      -- override init to set appropriate constraints on dimensions
+      function SobelXConv:__init(nInputPlane, nOutputPlane)
+        parent.__init(self,nInputPlane, nOutputPlane, 3, 3, 1, 1, 1, 1)
+        self:reset()
+      end
+
+      -- overide reset() to set weights as Sobel X kernel
+      function SobelXConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          local sobel_x = torch.DoubleTensor(3,3):fill(0)
+          sobel_x[1][1] = -1.0/8
+          sobel_x[2][1] = -2.0/8
+          sobel_x[3][1] = -1.0/8
+          sobel_x[1][3] = 1.0/8
+          sobel_x[2][3] = 2.0/8
+          sobel_x[3][3] = 1.0/8
+          
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(sobel_x)
+          end
+        end
+      end
+
+      -- empty accGradParameters() to prevent any weight updates
+      function SobelXConv:accGradParameters(input, gradOutput, scale)
+      end
+end
+
+
+--[[
+A custom convolution layer for applying Sobel filter in Y-direction.
+This is a fixed layer i.e. weights do not update.
+]]-- 
+do
+    local SobelYConv, parent = torch.class('nn.SobelYConv', 'nn.SpatialConvolution')
+      -- override init to set appropriate constraints on dimensions
+      function SobelYConv:__init(nInputPlane, nOutputPlane)
+        parent.__init(self,nInputPlane, nOutputPlane, 3, 3, 1, 1, 1, 1)
+        self:reset()
+      end
+
+      -- overide reset() to set weights as Sobel Y kernel
+      function SobelYConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          local sobel_y = torch.DoubleTensor(3,3):fill(0)
+          sobel_y[1][1] = 1.0/8
+          sobel_y[1][2] = 2.0/8
+          sobel_y[1][3] = 1.0/8
+          sobel_y[3][1] = -1.0/8
+          sobel_y[3][2] = -2.0/8
+          sobel_y[3][3] = -1.0/8
+          
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(sobel_y)
+          end
+        end
+      end
+
+      -- empty accGradParameters() to prevent any weight updates
+      function SobelYConv:accGradParameters(input, gradOutput, scale)
+      end
+end
+
+
+--[[
+exposure model based generator
+returns-
+o2: processed(cleaned) image
+shadowMap_: predicted shadow
+shadowLaplacian_: LOG of predicted shadow map
+shadowSobel_: map of magnitude of sobel filter filter output on shadow map 
+]]--
+function defineG_unet_exposure_shadow_map(input_nc, output_nc, ngf)
+    local netG = nil
+    local input = - nn.Identity()
+    -- input is (nc) x 256 x 256
+    local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
+    -- input is (ngf) x 128 x 128
+    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    -- input is (ngf * 2) x 64 x 64
+    local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
+    -- input is (ngf * 4) x 32 x 32
+    local e4 = e3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 16 x 16
+    local e5 = e4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 8 x 8
+    local e6 = e5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 4 x 4
+    local e7 = e6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 2 x 2
+    local e8 = e7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 1 x 1
+
+    local d1_ = e8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 2 x 2
+    local d1 = {d1_,e7} - nn.JoinTable(2)
+    local d2_ = d1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 4 x 4
+    local d2 = {d2_,e6} - nn.JoinTable(2)
+    local d3_ = d2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 8 x 8
+    local d3 = {d3_,e5} - nn.JoinTable(2)
+    local d4_ = d3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 16 x 16
+    local d4 = {d4_,e4} - nn.JoinTable(2)
+    local d5_ = d4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
+    -- input is (ngf * 4) x 32 x 32
+    local d5 = {d5_,e3} - nn.JoinTable(2)
+    local d6_ = d5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    -- input is (ngf * 2) x 64 x 64
+    local d6 = {d6_,e2} - nn.JoinTable(2)
+    local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
+    -- input is (ngf) x128 x 128
+    local d7 = {d7_,e1} - nn.JoinTable(2)
+    local d8 = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.ReLU(true)
+    -- input is (nc) x 256 x 256
+
+    local d8_ = d8 - nn.AddConstant(1) -- [1, inf)
+    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
+    local o1_ = {input_deprocess,d8_} - nn.CMulTable()
+    local o2 = o1_ - nn.Clamp(0,1) - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
+    
+    local shadowMap = d8_ - nn.Power(-1) -- [1, inf) to (0,1]
+    
+    local shadowLaplacian = shadowMap - nn.LaplacianConv(output_nc, output_nc) - nn.ReLU(true)
+    
+    local shadowSobelX_2 = shadowMap - nn.SobelXConv(output_nc,output_nc) - nn.Square()
+    local shadowSobelY_2 = shadowMap - nn.SobelYConv(output_nc,output_nc) - nn.Square()
+    local shadowSobel = {shadowSobelX_2,shadowSobelY_2} - nn.CAddTable() - nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
+
+    -- [0,1] to [-1,1]
+    local shadowMap_ = shadowMap - nn.MulConstant(2) - nn.AddConstant(-1)
+    local shadowLaplacian_ = shadowLaplacian - nn.MulConstant(2) - nn.AddConstant(-1)
+    local shadowSobel_ = shadowSobel - nn.MulConstant(2) - nn.AddConstant(-1)
+    
+    netG = nn.gModule({input},{o2, shadowMap_, shadowLaplacian_, shadowSobel_})
 
     --graph.dot(netG.fg,'netG')
 
