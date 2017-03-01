@@ -374,10 +374,13 @@ function defineG_unet_exposure_shadow_map(input_nc, output_nc, ngf)
     local shadowSobelY_2 = shadowMap - nn.SobelYConv(output_nc,output_nc) - nn.Square()
     local shadowSobel = {shadowSobelX_2,shadowSobelY_2} - nn.CAddTable() - nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
 
+    local shadow_input_diff = {shadowMap,input_deprocess} - nn.CSubTable()
+    local shadowSobel_scaled = {shadowSobel,shadow_input_diff} - nn.CMulTable()
+
     -- [0,1] to [-1,1]
     local shadowMap_ = shadowMap - nn.MulConstant(2) - nn.AddConstant(-1)
     local shadowLaplacian_ = shadowLaplacian - nn.MulConstant(2) - nn.AddConstant(-1)
-    local shadowSobel_ = shadowSobel - nn.MulConstant(2) - nn.AddConstant(-1)
+    local shadowSobel_ = shadowSobel_scaled - nn.MulConstant(2) - nn.AddConstant(-1)
     
     netG = nn.gModule({input},{o2, shadowMap_, shadowLaplacian_, shadowSobel_})
 
