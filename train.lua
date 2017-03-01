@@ -105,7 +105,8 @@ local ndf = opt.ndf
 local ngf = opt.ngf
 local real_label = 1
 local fake_label = 0
-
+local smooth_shadow_label = -1
+ 
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
     local shadowMap = nil
@@ -316,7 +317,7 @@ local fGx = function(x)
     if opt.which_model_netG == "unet_exposure_shadow_map" then
       local df_sobel_ = fake_shadowSobel:clone():fill(0)
       if opt.use_Sobel==1 then
-        local zero_sobel = fake_shadowSobel:clone():fill(0)
+        local zero_sobel = fake_shadowSobel:clone():fill(smooth_shadow_label)
         errSobel = criterionSobel:forward(fake_shadowSobel, zero_sobel)
         df_sobel_ = criterionSobel:backward(fake_shadowSobel, zero_sobel) 
         df_sobel_ = df_sobel_:mul(opt.lambda)
