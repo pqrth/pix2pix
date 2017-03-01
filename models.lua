@@ -104,7 +104,7 @@ function defineG_unet_exposure(input_nc, output_nc, ngf)
     -- input is (nc) x 256 x 256
     local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
     -- input is (ngf) x 128 x 128
-    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4	, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
     -- input is (ngf * 2) x 64 x 64
     local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
     -- input is (ngf * 4) x 32 x 32
@@ -140,14 +140,18 @@ function defineG_unet_exposure(input_nc, output_nc, ngf)
     local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
     -- input is (ngf) x128 x 128
     local d7 = {d7_,e1} - nn.JoinTable(2)
-    local d8 = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.ReLU(true)
+    local d8_ = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(output_nc)
     -- input is (nc) x 256 x 256
 
-    --local o1 = d8 - nn.Tanh()
-    local d8_ = d8 - nn.AddConstant(1)
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
-    local o1_ = {input_deprocess,d8_} - nn.CMulTable()
-    local o2 = o1_ - nn.Clamp(0,1) - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
+    local d8 = {d8_,input_deprocess} - nn.JoinTable(2)
+    local d9_ = d8 - nn.ReLU(true) - nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1) - nn.ReLU(true)
+    local shadowMap = {d9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
+    local d9 = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
+
+    local o1_ = {input_deprocess,d9} - nn.CMulTable()
+    local o2 = o1_ - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
+    
     netG = nn.gModule({input},{o2})
 
     --graph.dot(netG.fg,'netG')
@@ -352,15 +356,17 @@ function defineG_unet_exposure_shadow_map(input_nc, output_nc, ngf)
     local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
     -- input is (ngf) x128 x 128
     local d7 = {d7_,e1} - nn.JoinTable(2)
-    local d8 = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.ReLU(true)
+    local d8_ = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(output_nc)
     -- input is (nc) x 256 x 256
 
-    local d8_ = d8 - nn.AddConstant(1) - nn.Power(-1) - nn.GaussianConv(output_nc, output_nc) - nn.Power(-1) -- [1, inf)
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
-    local o1_ = {input_deprocess,d8_} - nn.CMulTable()
-    local o2 = o1_ - nn.Clamp(0,1) - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
-    
-    local shadowMap = d8_ - nn.Power(-1) -- [1, inf) to (0,1]
+    local d8 = {d8_,input_deprocess} - nn.JoinTable(2)
+    local d9_ = d8 - nn.ReLU(true) - nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1) - nn.ReLU(true)
+    local shadowMap = {d9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
+    local d9 = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
+
+    local o1_ = {input_deprocess,d9} - nn.CMulTable()
+    local o2 = o1_ - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
     
     local shadowLaplacian = shadowMap - nn.LaplacianConv(output_nc, output_nc) - nn.ReLU(true)
     
