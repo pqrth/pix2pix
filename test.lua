@@ -6,6 +6,7 @@
 require 'image'
 require 'nn'
 require 'nngraph'
+require 'models'
 util = paths.dofile('util/util.lua')
 torch.setdefaulttensortype('torch.FloatTensor')
 
@@ -32,6 +33,7 @@ opt = {
     checkpoints_dir = './checkpoints', -- loads models from here
     results_dir='./results/',          -- saves results here
     which_epoch = 'latest',            -- which epoch to test? set to 'latest' to use latest cached model
+    no_of_outputs = 1,           -- set to the number of output images from generator
 }
 
 
@@ -113,6 +115,17 @@ for n=1,math.floor(opt.how_many/opt.batchSize) do
        local target_AB = target:float()
        target = util.deprocessLAB_batch(input_L, target_AB)
        input = util.deprocessL_batch(input_L)
+    elseif opt.no_of_outputs > 1 then
+       local netGOutput = netG:forward(input)
+       local outputAppended = util.deprocess_batch(netGOutput[1]);
+       for ind=2, opt.no_of_outputs do
+         outputAppended = torch.cat(outputAppended,util.deprocess_batch(netGOutput[ind]),4)
+       end
+       --output = util.deprocess_batch(netGOutput[1])
+       output = outputAppended
+       input = util.deprocess_batch(input):float()
+       output = output:float()
+       target = util.deprocess_batch(target):float()
     else 
         output = util.deprocess_batch(netG:forward(input))
         input = util.deprocess_batch(input):float()
@@ -129,9 +142,9 @@ for n=1,math.floor(opt.how_many/opt.batchSize) do
     -- print(output:size())
     -- print(target:size())
     for i=1, opt.batchSize do
-        image.save(paths.concat(image_dir,'input',filepaths_curr[i]), image.scale(input[i],input[i]:size(2),input[i]:size(3)/opt.aspect_ratio))
-        image.save(paths.concat(image_dir,'output',filepaths_curr[i]), image.scale(output[i],output[i]:size(2),output[i]:size(3)/opt.aspect_ratio))
-        image.save(paths.concat(image_dir,'target',filepaths_curr[i]), image.scale(target[i],target[i]:size(2),target[i]:size(3)/opt.aspect_ratio))
+        image.save(paths.concat(image_dir,'input',filepaths_curr[i]), image.scale(input[i],input[i]:size(3),input[i]:size(2)/opt.aspect_ratio))
+        image.save(paths.concat(image_dir,'output',filepaths_curr[i]), image.scale(output[i],output[i]:size(3),output[i]:size(2)/opt.aspect_ratio))
+        image.save(paths.concat(image_dir,'target',filepaths_curr[i]), image.scale(target[i],target[i]:size(3),target[i]:size(2)/opt.aspect_ratio))
     end
     print('Saved images to: ', image_dir)
     
