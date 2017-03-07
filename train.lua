@@ -115,6 +115,7 @@ function defineG(input_nc, output_nc, ngf)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
     elseif opt.which_model_netG == "unet_exposure" then netG = defineG_unet_exposure(input_nc, output_nc, ngf)
     elseif opt.which_model_netG == "unet_exposure_shadow_map" then netG = defineG_unet_exposure_shadow_map(input_nc, output_nc, ngf)
+    elseif opt.which_model_netG == "unet_exposure_simple" then netG = defineG_unet_exposure_simple(input_nc, output_nc, ngf)
     else error("unsupported netG model")
     end
    
@@ -175,7 +176,7 @@ optimStateD = {
 local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize, opt.fineSize)
 local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
-local fake_shadowMap = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_B_clipped = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowMap = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowSobel = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
@@ -233,6 +234,11 @@ function createRealFake()
         fake_shadowMap = netGoutput[2]
         fake_shadowMapLP = netGoutput[3]
         fake_shadowSobel = netGoutput[4]
+    elseif opt.which_model_netG == "unet_exposure_simple" then
+        local netGoutput = netG:forward(real_A)
+        fake_B = netGoutput[1]
+        fake_B_clipped = netGoutput[2]
+        fake_shadowMap = netGoutput[3]
     else
         fake_B = netG:forward(real_A)
     end
@@ -324,6 +330,9 @@ local fGx = function(x)
       end
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
       netG:backward(real_A, {df__, df__:clone():fill(0), df__:clone():fill(0), df_sobel_})
+    elseif opt.which_model_netG == "unet_exposure_simple" then
+      local df__ = df_dg + df_do_AE:mul(opt.lambda)
+      netG:backward(real_A, {df__, df__:clone():fill(0), df__:clone():fill(0)})
     else
       netG:backward(real_A, df_dg + df_do_AE:mul(opt.lambda))
     end
@@ -400,6 +409,11 @@ for epoch = 1, opt.niter do
                     for i2=1, fake_B:size(1) do
                         if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_shadowMap[i2]:float()),util.deprocess(fake_shadowMapLP[i2]:float()),util.deprocess(fake_shadowSobel[i2]:float())},3)
                         else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_shadowMap[i2]:float()),util.deprocess(fake_shadowMapLP[i2]:float()),util.deprocess(fake_shadowSobel[i2]:float())},3), 2) end
+                    end
+                elseif opt.which_model_netG == "unet_exposure_simple" then
+                    for i2=1, fake_B:size(1) do
+                        if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_B_clipped[i2]:float()),util.deprocess(fake_shadowMap[i2]:float())},3)
+                        else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_B_clipped[i2]:float()),util.deprocess(fake_shadowMap[i2]:float())},3), 2) end
                     end
                 else 
                     for i2=1, fake_B:size(1) do
