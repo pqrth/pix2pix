@@ -46,12 +46,14 @@ opt = {
    condition_GAN = 1,                 -- set to 0 to use unconditional discriminator
    use_GAN = 1,                       -- set to 0 to turn off GAN term
    use_L1 = 1,                        -- set to 0 to turn off L1 term
-   use_Sobel = 1,                     -- set to 0 to turn off Sobel term
+   use_Sobel = 0,                     -- set to 1 to turn on Sobel term
+   use_NGC = 0,                     -- set to 1 to turn on Sobel term
    which_model_netD = 'basic', -- selects model to use for netD
    which_model_netG = 'unet',  -- selects model to use for netG
    n_layers_D = 0,             -- only used if which_model_netD=='n_layers'
    lambda = 100,               -- weight on L1 term in objective
-   lambdaSobel = 100,               -- weight on Sobel term in objective
+   lambdaSobel = 100,          -- weight on Sobel term in objective
+   lambdaNGC = 100,            -- weight on NGC term in objective
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -106,6 +108,7 @@ local ngf = opt.ngf
 local real_label = 1
 local fake_label = 0
 local smooth_shadow_label = -1
+local NGC_label = 0
  
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
@@ -163,6 +166,7 @@ print(netD)
 local criterion = nn.BCECriterion()
 local criterionAE = nn.AbsCriterion()
 local criterionSobel = nn.AbsCriterion()
+local criterionNGC = nn.AbsCriterion()
 ---------------------------------------------------------------------------
 optimStateG = {
    learningRate = opt.lr,
@@ -177,12 +181,12 @@ local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize, opt.fineSize)
 local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_B_clipped = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
-local fake_shadowMapLP = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_shadowMapNGC = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowMap = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowSobel = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
-local errD, errG, errL1, errSobel = 0, 0, 0, 0
+local errD, errG, errL1, errNGC, errSobel = 0, 0, 0, 0, 0
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -198,7 +202,7 @@ if opt.gpu > 0 then
    if opt.cudnn==1 then
       netG = util.cudnn(netG); netD = util.cudnn(netD);
    end
-   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda();
+   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda(); criterionNGC:cuda();
    print('done')
 else
 	print('running model on CPU')
@@ -233,7 +237,7 @@ function createRealFake()
         local netGoutput = netG:forward(real_A)
         fake_B = netGoutput[1]
         fake_shadowMap = netGoutput[2]
-        fake_shadowMapLP = netGoutput[3]
+        fake_shadowMapNGC = netGoutput[3]
         fake_shadowSobel = netGoutput[4]
     elseif opt.which_model_netG == "unet_exposure_simple" then
         local netGoutput = netG:forward(real_A)
@@ -327,10 +331,21 @@ local fGx = function(x)
         local zero_sobel = fake_shadowSobel:clone():fill(smooth_shadow_label)
         errSobel = criterionSobel:forward(fake_shadowSobel, zero_sobel)
         df_sobel_ = criterionSobel:backward(fake_shadowSobel, zero_sobel) 
-        df_sobel_ = df_sobel_:mul(opt.lambda)
+        df_sobel_ = df_sobel_:mul(opt.lambdaSobel)
       end
+
+      local df_NGC_ = fake_shadowMapNGC:clone():fill(0)
+      if opt.use_NGC==1 then
+        local zero_NGC = fake_shadowMapNGC:clone():fill(NGC_label)
+        errNGC = criterionNGC:forward(fake_shadowMapNGC, zero_NGC)
+        df_NGC_ = criterionNGC:backward(fake_shadowMapNGC, zero_NGC) 
+        df_NGC_ = df_NGC_:mul(opt.lambdaNGC)
+      end
+
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
-      netG:backward(real_A, {df__, df__:clone():fill(0), df__:clone():fill(0), df_sobel_})
+
+      netG:backward(real_A, {df__, df__:clone():fill(0), df_NGC_, df_sobel_})
+
     elseif opt.which_model_netG == "unet_exposure_simple" then
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
       netG:backward(real_A, {df__, df__:clone():fill(0), df__:clone():fill(0)})
@@ -408,8 +423,8 @@ for epoch = 1, opt.niter do
                     end
                 elseif opt.which_model_netG == "unet_exposure_shadow_map" then
                     for i2=1, fake_B:size(1) do
-                        if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_shadowMap[i2]:float()),util.deprocess(fake_shadowMapLP[i2]:float()),util.deprocess(fake_shadowSobel[i2]:float())},3)
-                        else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_shadowMap[i2]:float()),util.deprocess(fake_shadowMapLP[i2]:float()),util.deprocess(fake_shadowSobel[i2]:float())},3), 2) end
+                        if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_shadowMap[i2]:float()),util.deprocess(fake_shadowMapNGC[i2]:float()),util.deprocess(fake_shadowSobel[i2]:float())},3)
+                        else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),util.deprocess(fake_shadowMap[i2]:float()),util.deprocess(fake_shadowMapNGC[i2]:float()),util.deprocess(fake_shadowSobel[i2]:float())},3), 2) end
                     end
                 elseif opt.which_model_netG == "unet_exposure_simple" then
                     for i2=1, fake_B:size(1) do
@@ -431,11 +446,11 @@ for epoch = 1, opt.niter do
         -- logging
         if counter % opt.print_freq == 0 then
             print(('Epoch: [%d][%8d / %8d]\t Time: %.3f  DataTime: %.3f  '
-                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f ErrSobel: %.4f'):format(
+                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f ErrNGC: %.4f ErrSobel: %.4f'):format(
                      epoch, ((i-1) / opt.batchSize),
                      math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
                      tm:time().real / opt.batchSize, data_tm:time().real / opt.batchSize,
-                     errG and errG or -1, errD and errD or -1, errL1 and errL1 or -1, errSobel and errSobel or -1))
+                     errG and errG or -1, errD and errD or -1, errL1 and errL1 or -1, errNGC and errNGC or -1, errSobel and errSobel or -1))
         end
         
         -- save latest model
