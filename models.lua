@@ -232,7 +232,6 @@ do
         if k < 3 then k = 3 end
         pad = math.ceil((k-1)/2)
         parent.__init(self,nInputPlane, nOutputPlane, k, k, 1, 1, pad, pad)
-        self:reset()
       end
 
       -- overide reset() to set weights as LOG kernel
@@ -242,7 +241,7 @@ do
         end
         if self.weight then
           self.weight:fill(0)
-          local lp = image.laplacian(self.weight:size()[3])
+          local lp = image.laplacian(self.weight:size()[3],nil,nil,true)
           for i=1,self.weight:size()[1] do
             self.weight[i][i]:copy(lp)
           end 
@@ -266,7 +265,6 @@ do
         if k < 3 then k = 3 end
         pad = math.ceil((k-1)/2)
         parent.__init(self,nInputPlane, nOutputPlane, k, k, 1, 1, pad, pad)
-        self:reset()
       end
 
       -- overide reset() to set weights as Gaussian kernel
@@ -276,7 +274,7 @@ do
         end
         if self.weight then
           self.weight:fill(0)
-          local lp = image.gaussian(self.weight:size()[3])
+          local lp = image.gaussian(self.weight:size()[3],nil,nil,true)
           for i=1,self.weight:size()[1] do
             self.weight[i][i]:copy(lp)
           end
@@ -297,7 +295,6 @@ do
       -- override init to set appropriate constraints on dimensions
       function SobelXConv:__init(nInputPlane, nOutputPlane)
         parent.__init(self,nInputPlane, nOutputPlane, 3, 3, 1, 1, 1, 1)
-        self:reset()
       end
 
       -- overide reset() to set weights as Sobel X kernel
@@ -336,7 +333,6 @@ do
       -- override init to set appropriate constraints on dimensions
       function SobelYConv:__init(nInputPlane, nOutputPlane)
         parent.__init(self,nInputPlane, nOutputPlane, 3, 3, 1, 1, 1, 1)
-        self:reset()
       end
 
       -- overide reset() to set weights as Sobel Y kernel
@@ -362,6 +358,38 @@ do
 
       -- empty accGradParameters() to prevent any weight updates
       function SobelYConv:accGradParameters(input, gradOutput, scale)
+      end
+end
+
+--[[
+A custom convolution laye.
+This is a fixed layer i.e. weights do not update.
+]]--
+do
+    -- override init to set appropriate constraints on dimensions
+    local FixedLayerWise2DConv, parent = torch.class('nn.FixedLayerWise2DConv', 'nn.SpatialConvolution')
+      function FixedLayerWise2DConv:__init(nInputPlane, nOutputPlane, kernel2D)
+        k = kernel2D:size()[1]
+	pad = math.ceil((k-1)/2)
+	self.kernel2D = kernel2D
+        parent.__init(self,nInputPlane, nOutputPlane, k, k, 1, 1, pad, pad)
+      end
+
+      -- overide reset() to set weights as custom kernel
+      function FixedLayerWise2DConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(self.kernel2D)
+          end
+        end
+      end
+
+      -- empty accGradParameters() to prevent any weight updates
+      function FixedLayerWise2DConv:accGradParameters(input, gradOutput, scale)
       end
 end
 
