@@ -54,10 +54,21 @@ opt = {
    lambda = 100,               -- weight on L1 term in objective
    lambdaSobel = 100,          -- weight on Sobel term in objective
    lambdaNGC = 100,            -- weight on NGC term in objective
+   no_of_outputs = 1,
+   val = 0,
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
-for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
+for k,v in pairs(opt)
+  do 
+    local optoption = tonumber(os.getenv(k)) or os.getenv(k) or opt[k]
+    if optoption == "" then
+      opt[k] = opt[k]
+    else
+      opt[k] = optoption
+    --opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] 
+  end
+end
 print(opt)
 
 local input_nc = opt.input_nc
@@ -458,6 +469,17 @@ for epoch = 1, opt.niter do
             print(('saving the latest model (epoch %d, iters %d)'):format(epoch, counter))
             torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'latest_net_G.t7'), netG:clearState())
             torch.save(paths.concat(opt.checkpoints_dir, opt.name, 'latest_net_D.t7'), netD:clearState())
+	    if opt.val == 1 then
+	    do
+              local command1 = 'DATA_ROOT='..opt.DATA_ROOT..' name='..opt.name..' which_direction='..opt.which_direction..' loadSize='..opt.loadSize..' fineSize='..opt.loadSize..' no_of_outputs='..opt.no_of_outputs..' phase=val th test.lua'
+	      local handle1 = io.popen(command1)
+	      handle1:close()
+	      local command2 = 'mv ./results/'..opt.name..' ./results/'..opt.name..'_'..counter
+	      local handle2 = io.popen(command2)
+	      handle2:close()
+	      print('validation ran ...')
+	    end
+	    end
         end
         
     end
