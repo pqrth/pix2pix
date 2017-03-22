@@ -178,6 +178,8 @@ local criterion = nn.BCECriterion()
 local criterionAE = nn.AbsCriterion()
 local criterionSobel = nn.AbsCriterion()
 local criterionNGC = nn.AbsCriterion()
+local criterionNGC_dw = nn.AbsCriterion()
+local criterionSobel_dw = nn.AbsCriterion()
 ---------------------------------------------------------------------------
 optimStateG = {
    learningRate = opt.lr,
@@ -193,11 +195,13 @@ local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_B_clipped = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowMapNGC = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_shadowMapNGC_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowMap = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowSobel = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_shadowSobel_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
-local errD, errG, errL1, errNGC, errSobel = 0, 0, 0, 0, 0
+local errD, errG, errL1, errNGC, errNGC_dw, errSobel, errSobel_dw = 0, 0, 0, 0, 0, 0, 0
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -213,7 +217,7 @@ if opt.gpu > 0 then
    if opt.cudnn==1 then
       netG = util.cudnn(netG); netD = util.cudnn(netD);
    end
-   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda(); criterionNGC:cuda();
+   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda(); criterionNGC:cuda(); criterionNGC_dw:cuda(); criterionSobel_dw:cuda();
    print('done')
 else
 	print('running model on CPU')
@@ -249,7 +253,9 @@ function createRealFake()
         fake_B = netGoutput[1]
         fake_shadowMap = netGoutput[2]
         fake_shadowMapNGC = netGoutput[3]
-        fake_shadowSobel = netGoutput[4]
+	fake_shadowMapNGC_dw = netGoutput[4]
+        fake_shadowSobel = netGoutput[5]
+	fake_shadowSobel_dw = netGoutput[6]
     elseif opt.which_model_netG == "unet_exposure_simple" then
         local netGoutput = netG:forward(real_A)
         fake_B = netGoutput[1]
@@ -338,24 +344,36 @@ local fGx = function(x)
     
     if opt.which_model_netG == "unet_exposure_shadow_map" then
       local df_sobel_ = fake_shadowSobel:clone():fill(0)
+      local df_sobel_dw_ = fake_shadowSobel_dw:clone():fill(0)
       if opt.use_Sobel==1 then
         local zero_sobel = fake_shadowSobel:clone():fill(smooth_shadow_label)
         errSobel = criterionSobel:forward(fake_shadowSobel, zero_sobel)
         df_sobel_ = criterionSobel:backward(fake_shadowSobel, zero_sobel) 
         df_sobel_ = df_sobel_:mul(opt.lambdaSobel)
+
+	local zero_sobel_dw = fake_shadowSobel_dw:clone():fill(smooth_shadow_label)
+        errSobel_dw = criterionSobel_dw:forward(fake_shadowSobel_dw, zero_sobel_dw)
+        df_sobel_dw_ = criterionSobel_dw:backward(fake_shadowSobel_dw, zero_sobel_dw)
+        df_sobel_dw_ = df_sobel_dw_:mul(opt.lambdaSobel)
       end
 
       local df_NGC_ = fake_shadowMapNGC:clone():fill(0)
+      local df_NGC_dw_ = fake_shadowMapNGC_dw:clone():fill(0)
       if opt.use_NGC==1 then
         local zero_NGC = fake_shadowMapNGC:clone():fill(NGC_label)
         errNGC = criterionNGC:forward(fake_shadowMapNGC, zero_NGC)
         df_NGC_ = criterionNGC:backward(fake_shadowMapNGC, zero_NGC) 
         df_NGC_ = df_NGC_:mul(opt.lambdaNGC)
+
+	local zero_NGC_dw = fake_shadowMapNGC_dw:clone():fill(NGC_label)
+        errNGC_dw = criterionNGC_dw:forward(fake_shadowMapNGC_dw, zero_NGC_dw)
+        df_NGC_dw_ = criterionNGC_dw:backward(fake_shadowMapNGC_dw, zero_NGC_dw)
+        df_NGC_dw_ = df_NGC_dw_:mul(opt.lambdaNGC)
       end
 
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
 
-      netG:backward(real_A, {df__, df__:clone():fill(0), df_NGC_, df_sobel_})
+      netG:backward(real_A, {df__, df__:clone():fill(0), df_NGC_, df_NGC_dw_, df_sobel_, df_sobel_dw_})
 
     elseif opt.which_model_netG == "unet_exposure_simple" then
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
@@ -461,7 +479,7 @@ for epoch = 1, opt.niter do
                      epoch, ((i-1) / opt.batchSize),
                      math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
                      tm:time().real / opt.batchSize, data_tm:time().real / opt.batchSize,
-                     errG and errG or -1, errD and errD or -1, errL1 and errL1 or -1, errNGC and errNGC or -1, errSobel and errSobel or -1))
+                     errG and errG or -1, errD and errD or -1, errL1 and errL1 or -1, errNGC and errNGC or -1, errNGC_dw and errNGC_dw or -1, errSobel and errSobel or -1, errSobel_dw and errSobel_dw or -1))
         end
         
         -- save latest model

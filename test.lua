@@ -128,7 +128,21 @@ for n=1,math.floor(opt.how_many/opt.batchSize) do
        local netGOutput = netG:forward(input)
        local outputAppended = util.deprocess_batch(netGOutput[1]);
        for ind=2, opt.no_of_outputs do
-         outputAppended = torch.cat(outputAppended,util.deprocess_batch(netGOutput[ind]),4)
+	 if netGOutput[ind]:size()[3] == outputAppended:size()[3] then
+           outputAppended = torch.cat(outputAppended,util.deprocess_batch(netGOutput[ind]),4)
+	 else
+	   local smallOut = util.deprocess_batch(netGOutput[ind])
+	   print('smallOut=')
+	print(smallOut:size())
+	print(netGOutput[ind]:size())
+	print(outputAppended:size())
+	   local paddedOut = torch.DoubleTensor(smallOut:size()[1],smallOut:size()[2],outputAppended:size()[3],outputAppended:size()[3]):fill(0)
+	   if opt.gpu > 0 then
+	     paddedOut = paddedOut:cuda()
+	   end
+	   paddedOut[{{},{},{1,smallOut:size()[3]},{1,smallOut:size()[4]}}] = smallOut
+	   outputAppended = torch.cat(outputAppended,paddedOut,4)
+	 end
        end
        --output = util.deprocess_batch(netGOutput[1])
        output = outputAppended

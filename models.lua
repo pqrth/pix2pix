@@ -455,25 +455,52 @@ function defineG_unet_exposure_shadow_map(input_nc, output_nc, ngf)
 
     local o1_ = {input_deprocess,d9} - nn.CMulTable()
     local o2 = o1_ - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
-    
+
     local correlation_window_size = 5
     local ave_kernel = torch.Tensor(correlation_window_size,correlation_window_size):fill(1/(correlation_window_size*correlation_window_size))
     local mean_windowed_shadow = shadowMap - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
     local mean_windowed_output = o1_ - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
     local mean1_X_mean2 = {mean_windowed_shadow, mean_windowed_output} - nn.CMulTable()
     local windowed_cross_corr_shadow_output = {shadowMap,o1_} - nn.CMulTable() - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
-    local windowed_NGC_shadow_output = {windowed_cross_corr_shadow_output, mean1_X_mean2} - nn.CSubTable()
+    local windowed_CCorr_centered_shadow_output = {windowed_cross_corr_shadow_output, mean1_X_mean2} - nn.CSubTable()
+
+--[[local shadow_sq_windowed_mean = shadowMap - nn.Square() - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
+    local output_sq_windowed_mean = o1_ - nn.Square() - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
+    local mean_windowed_shadow_sq = mean_windowed_shadow - nn.Square()
+    local mean_windowed_output_sq = mean_windowed_output - nn.Square()
+    local shadow_std = {shadow_sq_windowed_mean,mean_windowed_shadow_sq} - nn.CSubTable() - nn.ReLU(true) - nn.Sqrt()
+    local output_std = {output_sq_windowed_mean,mean_windowed_output_sq} - nn.CSubTable() - nn.ReLU(true) - nn.Sqrt()
+    local S1_X_S2 = {shadow_std,output_std} - nn.CMulTable() - nn.AddConstant(0.000001)
+    local windowed_NGC_shadow_output = {windowed_CCorr_centered_shadow_output,S1_X_S2} - nn.CDivTable()
+]]--
+
+    local downsampledShadow = shadowMap - nn.SpatialAveragePooling(4,4,4,4)
+    local downsampledOutput = o1_ - nn.SpatialAveragePooling(4,4,4,4)
+    local dw_mean_windowed_shadow = downsampledShadow - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
+    local dw_mean_windowed_output = downsampledOutput - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
+    local dw_mean1_X_mean2 = {dw_mean_windowed_shadow, dw_mean_windowed_output} - nn.CMulTable()
+    local dw_windowed_cross_corr_shadow_output = {downsampledShadow,downsampledOutput} - nn.CMulTable() - nn.FixedLayerWise2DConv(output_nc,output_nc,ave_kernel)
+    local dw_windowed_CCorr_centered_shadow_output = {dw_windowed_cross_corr_shadow_output, dw_mean1_X_mean2} - nn.CSubTable()
 
     local shadowSobelX_2 = shadowMap - nn.SobelXConv(output_nc,output_nc) - nn.Square()
     local shadowSobelY_2 = shadowMap - nn.SobelYConv(output_nc,output_nc) - nn.Square()
     local shadowSobel = {shadowSobelX_2,shadowSobelY_2} - nn.CAddTable() - nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
 
+    local dw_shadowSobelX_2 = downsampledShadow - nn.SobelXConv(output_nc,output_nc) - nn.Square()
+    local dw_shadowSobelY_2 = downsampledShadow - nn.SobelYConv(output_nc,output_nc) - nn.Square()
+    local dw_shadowSobel = {dw_shadowSobelX_2,dw_shadowSobelY_2} - nn.CAddTable() - nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
+
+    local CCorr_pow = windowed_CCorr_centered_shadow_output - nn.Abs() - nn.Sqrt() - nn.Sqrt()
+    local dw_CCorr_pow = dw_windowed_CCorr_centered_shadow_output - nn.Abs() - nn.Sqrt() - nn.Sqrt()
+    local sobelScaled = {shadowSobel,CCorr_pow} - nn.CMulTable()
+    local dw_sobelScaled = {dw_shadowSobel,dw_CCorr_pow} - nn.CMulTable()
     -- [0,1] to [-1,1]
     local shadowMap_ = shadowMap - nn.MulConstant(2) - nn.AddConstant(-1)
-    local windowed_NGC_shadow_output_ = windowed_NGC_shadow_output -- nn.MulConstant(2) - nn.AddConstant(-1)
-    local shadowSobel_ = shadowSobel - nn.MulConstant(2) - nn.AddConstant(-1)
-    
-    netG = nn.gModule({input},{o2, shadowMap_, windowed_NGC_shadow_output_, shadowSobel_})
+    local windowed_CCorr_centered_shadow_output_ = windowed_CCorr_centered_shadow_output -- nn.Abs() - nn.Sqrt() - nn.Sqrt() - nn.Threshold(0.3,0) - nn.Sqrt()-- nn.MulConstant(2) - nn.AddConstant(-1)
+    local shadowSobel_ = sobelScaled - nn.MulConstant(2) - nn.AddConstant(-1)
+    local dw_shadowSobel_ = dw_sobelScaled - nn.MulConstant(2) - nn.AddConstant(-1)
+
+    netG = nn.gModule({input},{o2, shadowMap_, windowed_CCorr_centered_shadow_output_, dw_windowed_CCorr_centered_shadow_output, shadowSobel_, dw_shadowSobel_})
 
     --graph.dot(netG.fg,'netG')
 
