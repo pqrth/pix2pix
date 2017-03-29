@@ -1,4 +1,5 @@
 require 'nngraph'
+require 'gvnn'
 
 function defineG_encoder_decoder(input_nc, output_nc, ngf)
     local netG = nil 
@@ -94,6 +95,66 @@ function defineG_unet(input_nc, output_nc, ngf)
     
     --graph.dot(netG.fg,'netG')
     
+    return netG
+end
+
+function defineG_unet_dewarp(input_nc, output_nc, ngf, height, width)
+    local netG = nil
+    local input = - nn.Identity()
+    -- input is (nc) x 256 x 256
+    local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
+    -- input is (ngf) x 128 x 128
+    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    -- input is (ngf * 2) x 64 x 64
+    local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
+    -- input is (ngf * 4) x 32 x 32
+    local e4 = e3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 16 x 16
+    local e5 = e4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 8 x 8
+    local e6 = e5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 4 x 4
+    local e7 = e6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 2 x 2
+    local e8 = e7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) -- nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 1 x 1
+
+    local d1_ = e8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 2 x 2
+    local d1 = {d1_,e7} - nn.JoinTable(2)
+    local d2_ = d1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 4 x 4
+    local d2 = {d2_,e6} - nn.JoinTable(2)
+    local d3_ = d2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 8 x 8
+    local d3 = {d3_,e5} - nn.JoinTable(2)
+    local d4_ = d3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 16 x 16
+    local d4 = {d4_,e4} - nn.JoinTable(2)
+    local d5_ = d4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
+    -- input is (ngf * 4) x 32 x 32
+    local d5 = {d5_,e3} - nn.JoinTable(2)
+    local d6_ = d5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    -- input is (ngf * 2) x 64 x 64
+    local d6 = {d6_,e2} - nn.JoinTable(2)
+    local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
+    -- input is (ngf) x128 x 128
+    local d7 = {d7_,e1} - nn.JoinTable(2)
+    local spfullconv_zero = nn.SpatialFullConvolution(ngf * 2, 2, 4, 4, 2, 2, 1, 1)
+    spfullconv_zero.weight:fill(0.0)
+    spfullconv_zero.bias:fill(0.0)
+    local d8 = d7 - nn.ReLU(true) - spfullconv_zero -- nn.SpatialFullConvolution(ngf * 2, 2, 4, 4, 2, 2, 1, 1)
+    -- input is (nc) x 256 x 256
+
+    --local o1 = d8 - nn.Tanh()
+    local d8_transposed = d8 - nn.Transpose({3,4},{2,4})
+    local flowGrid = d8_transposed - nn.OpticalFlow2DBHWD(height,width)
+    local inp_transposed = input - nn.Transpose({3,4},{2,4})
+    local o1 = {inp_transposed,flowGrid} - nn.BilinearSamplerBHWD() - nn.Transpose({2,4})
+    netG = nn.gModule({input},{o1})
+
+    --graph.dot(netG.fg,'netG')
+
     return netG
 end
 

@@ -9,7 +9,7 @@ require 'optim'
 util = paths.dofile('util/util.lua')
 require 'image'
 require 'models'
-
+require 'warp2d'
 
 opt = {
    DATA_ROOT = '',         -- path to images (should have subfolders 'train', 'val', etc)
@@ -108,7 +108,7 @@ local fake_label = 0
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
     if     opt.which_model_netG == "encoder_decoder" then netG = defineG_encoder_decoder(input_nc, output_nc, ngf)
-    elseif opt.which_model_netG == "unet" then netG = defineG_unet(input_nc, output_nc, ngf)
+    elseif opt.which_model_netG == "unet" then netG = defineG_unet_dewarp(input_nc, output_nc, ngf,opt.fineSize,opt.fineSize)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
     else error("unsupported netG model")
     end
@@ -208,9 +208,18 @@ function createRealFake()
     local real_data, data_path = data:getBatch()
     data_tm:stop()
     
-    real_A:copy(real_data[{ {}, idx_A, {}, {} }])
+    --real_A:copy(real_data[{ {}, idx_A, {}, {} }])
+    real_A:copy(real_data[{ {}, idx_B, {}, {} }])
     real_B:copy(real_data[{ {}, idx_B, {}, {} }])
-    
+
+    -- artificial warping (data augmentation)
+    for ind = 1, real_A:size(1) do
+	local im = torch.Tensor(real_A[ind]:size()):copy(real_A[ind])
+	pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
+	im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
+	real_A[ind]:copy(im)
+    end
+
     if opt.condition_GAN==1 then
         real_AB = torch.cat(real_A,real_B,2)
     else
