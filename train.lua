@@ -156,6 +156,7 @@ print(netD)
 
 local criterion = nn.BCECriterion()
 local criterionAE = nn.AbsCriterion()
+local criterionSobel = nn.AbsCriterion()
 ---------------------------------------------------------------------------
 optimStateG = {
    learningRate = opt.lr,
@@ -169,9 +170,10 @@ optimStateD = {
 local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize, opt.fineSize)
 local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_offsetSobel = torch.Tensor(opt.batchSize, 2, opt.fineSize, opt.fineSize)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
-local errD, errG, errL1 = 0, 0, 0
+local errD, errG, errL1, errSobel = 0, 0, 0, 0
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -187,7 +189,7 @@ if opt.gpu > 0 then
    if opt.cudnn==1 then
       netG = util.cudnn(netG); netD = util.cudnn(netD);
    end
-   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda();
+   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda();
    print('done')
 else
 	print('running model on CPU')
@@ -227,7 +229,9 @@ function createRealFake()
     end
     
     -- create fake
-    fake_B = netG:forward(real_A)
+    local netGoutput = netG:forward(real_A)
+    fake_B = netGoutput[1]
+    fake_offsetSobel = netGoutput[2]
     
     if opt.condition_GAN==1 then
         fake_AB = torch.cat(real_A,fake_B,2)
@@ -303,8 +307,15 @@ local fGx = function(x)
     else
         errL1 = 0
     end
-    
-    netG:backward(real_A, df_dg + df_do_AE:mul(opt.lambda))
+
+    local df_sobel_ = fake_offsetSobel:clone():fill(0)
+    local zero_sobel = fake_offsetSobel:clone():fill(0)
+    errSobel = criterionSobel:forward(fake_offsetSobel, zero_sobel)
+    df_sobel_ = criterionSobel:backward(fake_offsetSobel, zero_sobel) 
+    df_sobel_ = df_sobel_:mul(opt.lambda)
+   
+    local df__ = df_dg + df_do_AE:mul(opt.lambda) 
+    netG:backward(real_A, {df__, df_sobel_})
     
     return errG, gradParametersG
 end
@@ -407,14 +418,14 @@ for epoch = 1, opt.niter do
         
         -- logging and display plot
         if counter % opt.print_freq == 0 then
-            local loss = {errG=errG and errG or -1, errD=errD and errD or -1, errL1=errL1 and errL1 or -1}
+            local loss = {errG=errG and errG or -1, errD=errD and errD or -1, errL1=errL1 and errL1 or -1, errSobel=errSobel and errSobel or -1}
             local curItInBatch = ((i-1) / opt.batchSize)
             local totalItInBatch = math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize)
             print(('Epoch: [%d][%8d / %8d]\t Time: %.3f  DataTime: %.3f  '
-                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f'):format(
+                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f ErrSobel: %.4f'):format(
                      epoch, curItInBatch, totalItInBatch,
                      tm:time().real / opt.batchSize, data_tm:time().real / opt.batchSize,
-                     errG, errD, errL1))
+                     errG, errD, errL1, errSobel))
            
             local plot_vals = { epoch + curItInBatch / totalItInBatch }
             for k, v in ipairs(opt.display_plot) do

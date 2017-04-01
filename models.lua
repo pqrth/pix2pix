@@ -98,6 +98,81 @@ function defineG_unet(input_nc, output_nc, ngf)
     return netG
 end
 
+--[[
+A custom convolution layer for applying Sobel filter in X-direction.
+This is a fixed layer i.e. weights do not update.
+]]--
+do
+    local SobelXConv, parent = torch.class('nn.SobelXConv', 'nn.SpatialConvolution')
+      -- override init to set appropriate constraints on dimensions
+      function SobelXConv:__init(nInputPlane, nOutputPlane)
+        parent.__init(self,nInputPlane, nOutputPlane, 3, 3, 1, 1, 1, 1)
+      end
+
+      -- overide reset() to set weights as Sobel X kernel
+      function SobelXConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          local sobel_x = torch.DoubleTensor(3,3):fill(0)
+          sobel_x[1][1] = -1.0/8
+          sobel_x[2][1] = -2.0/8
+          sobel_x[3][1] = -1.0/8
+          sobel_x[1][3] = 1.0/8
+          sobel_x[2][3] = 2.0/8
+          sobel_x[3][3] = 1.0/8
+          
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(sobel_x)
+          end
+        end
+      end
+
+      -- empty accGradParameters() to prevent any weight updates
+      function SobelXConv:accGradParameters(input, gradOutput, scale)
+      end
+end
+
+
+--[[
+A custom convolution layer for applying Sobel filter in Y-direction.
+This is a fixed layer i.e. weights do not update.
+]]-- 
+do
+    local SobelYConv, parent = torch.class('nn.SobelYConv', 'nn.SpatialConvolution')
+      -- override init to set appropriate constraints on dimensions
+      function SobelYConv:__init(nInputPlane, nOutputPlane)
+        parent.__init(self,nInputPlane, nOutputPlane, 3, 3, 1, 1, 1, 1)
+      end
+
+      -- overide reset() to set weights as Sobel Y kernel
+      function SobelYConv:reset()
+        if self.bias then
+          self.bias:fill(0)
+        end
+        if self.weight then
+          self.weight:fill(0)
+          local sobel_y = torch.DoubleTensor(3,3):fill(0)
+          sobel_y[1][1] = 1.0/8
+          sobel_y[1][2] = 2.0/8
+          sobel_y[1][3] = 1.0/8
+          sobel_y[3][1] = -1.0/8
+          sobel_y[3][2] = -2.0/8
+          sobel_y[3][3] = -1.0/8
+          
+          for i=1,self.weight:size()[1] do
+            self.weight[i][i]:copy(sobel_y)
+          end
+        end
+      end
+
+      -- empty accGradParameters() to prevent any weight updates
+      function SobelYConv:accGradParameters(input, gradOutput, scale)
+      end
+end
+
 function defineG_unet_dewarp(input_nc, output_nc, ngf, height, width)
     local netG = nil
     local input = - nn.Identity()
@@ -147,11 +222,15 @@ function defineG_unet_dewarp(input_nc, output_nc, ngf, height, width)
     -- input is (nc) x 256 x 256
 
     --local o1 = d8 - nn.Tanh()
-    local d8_transposed = d8 - nn.Transpose({3,4},{2,4})
+    local offsetSobelX_2 = d8 - nn.SobelXConv(2,2) - nn.Square()
+    local offsetSobelY_2 = d8 - nn.SobelYConv(2,2) - nn.Square()
+    local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() - nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
+
+    local d8_transposed = offsetSobel - nn.Transpose({3,4},{2,4})
     local flowGrid = d8_transposed - nn.OpticalFlow2DBHWD(height,width)
     local inp_transposed = input - nn.Transpose({3,4},{2,4})
     local o1 = {inp_transposed,flowGrid} - nn.BilinearSamplerBHWD() - nn.Transpose({2,4})
-    netG = nn.gModule({input},{o1})
+    netG = nn.gModule({input},{o1,offsetSobel})
 
     --graph.dot(netG.fg,'netG')
 
