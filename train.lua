@@ -195,10 +195,10 @@ local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_B_clipped = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowMapNGC = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
-local fake_shadowMapNGC_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_shadowMapNGC_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize/4, opt.fineSize/4)
 local fake_shadowMap = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowSobel = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
-local fake_shadowSobel_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_shadowSobel_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize/4, opt.fineSize/4)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local errD, errG, errL1, errNGC, errNGC_dw, errSobel, errSobel_dw = 0, 0, 0, 0, 0, 0, 0
@@ -214,6 +214,11 @@ if opt.gpu > 0 then
    real_A = real_A:cuda();
    real_B = real_B:cuda(); fake_B = fake_B:cuda();
    real_AB = real_AB:cuda(); fake_AB = fake_AB:cuda();
+   fake_shadowMapNGC = fake_shadowMapNGC:cuda();
+   fake_shadowMapNGC_dw = fake_shadowMapNGC_dw:cuda();
+   fake_shadowMap = fake_shadowMap:cuda();
+   fake_shadowSobel = fake_shadowSobel:cuda();
+   fake_shadowSobel_dw = fake_shadowSobel_dw:cuda();
    if opt.cudnn==1 then
       netG = util.cudnn(netG); netD = util.cudnn(netD);
    end
@@ -475,7 +480,7 @@ for epoch = 1, opt.niter do
         -- logging
         if counter % opt.print_freq == 0 then
             print(('Epoch: [%d][%8d / %8d]\t Time: %.3f  DataTime: %.3f  '
-                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f ErrNGC: %.4f ErrSobel: %.4f'):format(
+                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f ErrNGC: %.4f ErrNGC_dw: %.4f ErrSobel: %.4f ErrSobel_dw: %.4f'):format(
                      epoch, ((i-1) / opt.batchSize),
                      math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
                      tm:time().real / opt.batchSize, data_tm:time().real / opt.batchSize,
