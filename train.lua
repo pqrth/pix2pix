@@ -108,7 +108,7 @@ local fake_label = 0
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
     if     opt.which_model_netG == "encoder_decoder" then netG = defineG_encoder_decoder(input_nc, output_nc, ngf)
-    elseif opt.which_model_netG == "unet" then netG = defineG_unet_dewarp(input_nc, output_nc, ngf,opt.fineSize,opt.fineSize)
+    elseif opt.which_model_netG == "unet" then netG = dewarp_multiscale(input_nc, output_nc, ngf,opt.fineSize,opt.fineSize,3)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
     else error("unsupported netG model")
     end
@@ -220,6 +220,13 @@ function createRealFake()
 	pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
 	im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
 	real_A[ind]:copy(im)
+	--[[img1 = torch.zeros(im:size())
+	scaleSize = torch.floor(im:size()[2]*.8)
+	pad = torch.floor((im:size()[2]-scaleSize)/2)
+	im = image.scale(im, scaleSize,'bilinear')
+	img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
+	img1 = image.rotate(img1,0.24*(torch.uniform()*2-1),'bilinear')
+	real_A[ind]:copy(img1)]]--
     end
 
     if opt.condition_GAN==1 then
@@ -315,7 +322,7 @@ local fGx = function(x)
     df_sobel_ = df_sobel_:mul(opt.lambda)
    
     local df__ = df_dg + df_do_AE:mul(opt.lambda) 
-    netG:backward(real_A, {df__, df_sobel_})
+    netG:backward(real_A, {df__, df_sobel_:clone():fill(0)})
     
     return errG, gradParametersG
 end

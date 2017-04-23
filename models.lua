@@ -1,5 +1,6 @@
 require 'nngraph'
 require 'gvnn'
+require 'spy'
 
 function defineG_encoder_decoder(input_nc, output_nc, ngf)
     local netG = nil 
@@ -222,18 +223,239 @@ function defineG_unet_dewarp(input_nc, output_nc, ngf, height, width)
     -- input is (nc) x 256 x 256
 
     --local o1 = d8 - nn.Tanh()
-    local offsetSobelX_2 = d8 - nn.SobelXConv(2,2) - nn.Square()
-    local offsetSobelY_2 = d8 - nn.SobelYConv(2,2) - nn.Square()
-    local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() - nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
+    local offsetSobelX_2 = d8 - nn.SobelXConv(2,2) - nn.Abs()--nn.Square()
+    local offsetSobelY_2 = d8 - nn.SobelYConv(2,2) - nn.Abs()--nn.Square()
+    local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() nn.MulConstant(0.5) -- nn.Sqrt() - nn.MulConstant(0.71) - nn.Power(0.3)
 
-    local d8_transposed = offsetSobel - nn.Transpose({3,4},{2,4})
+    local d8_transposed = d8 - nn.Transpose({3,4},{2,4})
     local flowGrid = d8_transposed - nn.OpticalFlow2DBHWD(height,width)
     local inp_transposed = input - nn.Transpose({3,4},{2,4})
-    local o1 = {inp_transposed,flowGrid} - nn.BilinearSamplerBHWD() - nn.Transpose({2,4})
+    local o1 = {inp_transposed,flowGrid} - nn.BilinearSamplerBHWD() - nn.Transpose({2,4},{3,4})
     netG = nn.gModule({input},{o1,offsetSobel})
 
     --graph.dot(netG.fg,'netG')
 
+    return netG
+end
+
+
+do
+    local RandomFlow2D, Parent = torch.class('nn.RandomFlow2D', 'nn.Module')
+
+    function RandomFlow2D:__init(low, high)
+       Parent.__init(self)
+       self.low = low or 0
+       self.high = high or 0.1
+    end
+
+    function RandomFlow2D:updateOutput(input)
+       local shape = input:size()
+       shape[shape:size()-2] = 2
+       self.output:resize(shape):uniform(self.low, self.high)
+       return self.output
+    end
+    
+    function RandomFlow2D:updateGradInput(input, gradOutput)
+       self.gradInput:resizeAs(input):zero()
+       return self.gradInput
+    end
+end
+
+
+function defineG_unet_flowPrediction(input_nc, output_nc, ngf, nLayers)
+    local netG = nil
+    local input = - nn.Identity()
+    local input_flowOffsets = - nn.Identity()
+    local feed_input = {input,input_flowOffsets} - nn.JoinTable(2)
+  
+    local encArr = {}
+    local mulArr = {}
+    encArr[1] = feed_input - nn.SpatialConvolution(input_nc+2, ngf, 4, 4, 2, 2, 1, 1)
+    mulArr[1] = 1
+    for i=2,nLayers do
+	mulArr[i] = mulArr[i-1] * 2
+	if mulArr[i] > 8 then mulArr[i] = 8 end
+	local encLayer = encArr[i-1] - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * mulArr[i-1], ngf * mulArr[i], 4, 4, 2, 2, 1, 1)
+	if i ~= nLayers then
+	    encArr[i] = encLayer - nn.SpatialBatchNormalization(ngf * mulArr[i])
+	else
+	    encArr[i] = encLayer
+	end
+    end
+
+    local decArr_ = {}
+    decArr_[1] = encArr[nLayers] - nn.SpatialFullConvolution(ngf * mulArr[nLayers], ngf * mulArr[nLayers-1], 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * mulArr[nLayers-1]) - nn.Dropout(0.5) 
+    for i=2,nLayers-1 do
+	local dLayerJoin = {decArr_[i-1],encArr[nLayers-i+1]} - nn.JoinTable(2)
+        local mulFrom = mulArr[nLayers-i+1]
+	local mulTo = mulArr[nLayers-i]
+	local dL = dLayerJoin - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * mulFrom * 2, ngf * mulTo, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * mulTo)
+	if i <= 3 then 
+	    decArr_[i] = dL - nn.Dropout(0.5)
+	else
+	    decArr_[i] = dL
+	end
+    end
+
+    local dLayerJoin = {decArr_[nLayers-1],encArr[1]} - nn.JoinTable(2)
+    local spfullconv_zero = nn.SpatialFullConvolution(ngf * 2, 2, 4, 4, 2, 2, 1, 1)
+    spfullconv_zero.weight:fill(0.0)
+    spfullconv_zero.bias:fill(0.0)    
+    decArr_[nLayers] = dLayerJoin - nn.ReLU(true) - spfullconv_zero
+    
+    local flowOffsets = {decArr_[nLayers],input_flowOffsets} - nn.CAddTable()
+
+--[[
+    -- input is (nc) x 256 x 256
+    local e1 = feed_input - nn.SpatialConvolution(input_nc+2, ngf, 4, 4, 2, 2, 1, 1)
+    -- input is (ngf) x 128 x 128
+    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    -- input is (ngf * 2) x 64 x 64
+    local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
+    -- input is (ngf * 4) x 32 x 32
+    local e4 = e3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 16 x 16
+    local e5 = e4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 8 x 8
+    local e6 = e5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 4 x 4
+    local e7 = e6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 2 x 2
+    local e8 = e7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) -- nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 1 x 1
+
+    local d1_ = e8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 2 x 2
+    local d1 = {d1_,e7} - nn.JoinTable(2)
+    local d2_ = d1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 4 x 4
+    local d2 = {d2_,e6} - nn.JoinTable(2)
+    local d3_ = d2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
+    -- input is (ngf * 8) x 8 x 8
+    local d3 = {d3_,e5} - nn.JoinTable(2)
+    local d4_ = d3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
+    -- input is (ngf * 8) x 16 x 16
+    local d4 = {d4_,e4} - nn.JoinTable(2)
+    local d5_ = d4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
+    -- input is (ngf * 4) x 32 x 32
+    local d5 = {d5_,e3} - nn.JoinTable(2)
+    local d6_ = d5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
+    -- input is (ngf * 2) x 64 x 64
+    local d6 = {d6_,e2} - nn.JoinTable(2)
+    local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
+    -- input is (ngf) x128 x 128
+    local d7 = {d7_,e1} - nn.JoinTable(2)
+    local spfullconv_zero = nn.SpatialFullConvolution(ngf * 2, 2, 4, 4, 2, 2, 1, 1)
+    spfullconv_zero.weight:fill(0.0)
+    spfullconv_zero.bias:fill(0.0)
+    local d8 = d7 - nn.ReLU(true) - spfullconv_zero -- nn.SpatialFullConvolution(ngf * 2, 2, 4, 4, 2, 2, 1, 1)
+
+    local flowOffsets = {d8,input_flowOffsets} - nn.CAddTable()
+]]--
+    netG = nn.gModule({input,input_flowOffsets},{flowOffsets})
+    return netG
+end
+
+
+function warp_by_flow(height, width)
+    local netG = nil
+    local input = - nn.Identity()
+    local input_flowOffsets = - nn.Identity()
+
+    local offsets_transposed = input_flowOffsets - nn.Transpose({3,4},{2,4})
+    local flowGrid = offsets_transposed - nn.OpticalFlow2DBHWD(height,width)
+    local inp_transposed = input - nn.Transpose({3,4},{2,4})
+    local output = {inp_transposed,flowGrid} - nn.BilinearSamplerBHWD() - nn.Transpose({2,4},{3,4})
+
+    netG = nn.gModule({input,input_flowOffsets},{output})
+    return netG
+end
+
+
+
+function downsample_by2()
+    local netG = nil
+    local input = - nn.Identity()
+    local output = input - nn.SpatialAveragePooling(2,2,2,2)
+    netG = nn.gModule({input},{output})
+    return netG
+end
+
+
+function dewarp_multiscale(input_nc, output_nc, ngf, height, width, nLevels)
+    local netG = nil
+    nLevels = nLevels or 1
+    local input = - nn.Identity()
+  
+    local inputArr = {}
+    inputArr[1] = input
+    local scale = 1
+    for i=2,nLevels do
+	scale = scale * 2
+	inputArr[i] = inputArr[i-1] - nn.SpatialAveragePooling(2,2,2,2)
+    end
+
+    local zeroOffsets = inputArr[nLevels] - nn.RandomFlow2D(0,0)
+    local flowArr = {}
+    local flowPredictorArr = {}
+    flowPredictorArr[1] = defineG_unet_flowPrediction(input_nc, output_nc, ngf, 8 - nLevels + 1)
+    flowArr[1] = {inputArr[nLevels],zeroOffsets} - flowPredictorArr[1]
+
+    for i=2,nLevels do
+	scale = scale / 2
+	local initOffsets = flowArr[i-1] - nn.SpatialUpSamplingBilinear(2)
+	--flowPredictorArr[i] = flowPredictorArr[1]:clone('weight','bias','gradWeight','gradBias')
+        flowPredictorArr[i] = defineG_unet_flowPrediction(input_nc, output_nc, ngf, 8 - nLevels + i)
+	local warping = warp_by_flow(height/scale, width/scale)
+	--warping:evaluate()
+	local waped_input = {inputArr[nLevels-i+1],initOffsets} - warping
+        flowArr[i] = {waped_input,initOffsets} - flowPredictorArr[i]
+    end
+ 
+    local offsets = flowArr[nLevels]
+    local warping = warp_by_flow(height,width)
+    --warping:evaluate()
+    local output = {input,offsets} - warping
+
+    local offsetSobelX_2 = offsets - nn.SobelXConv(2,2) - nn.Abs()
+    local offsetSobelY_2 = offsets - nn.SobelYConv(2,2) - nn.Abs()
+    local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() nn.MulConstant(0.5)
+ 
+    netG = nn.gModule({input},{output,offsetSobel})
+    return netG
+
+end
+
+
+function dewarp_multiStep(input_nc, output_nc, ngf, height, width, nLevels)
+    local netG = nil
+    nLevels = nLevels or 1
+    local input = - nn.Identity()
+
+    local zeroOffsets = input - nn.RandomFlow2D(0,0)
+    local flowArr = {}
+    local flowPredictorArr = {}
+    flowPredictorArr[1] = defineG_unet_flowPrediction(input_nc, output_nc, ngf, 8)
+    flowArr[1] = {input,zeroOffsets} - flowPredictorArr[1]
+
+    for i=2,nLevels do
+	local initOffsets = flowArr[i-1]
+	flowPredictorArr[i] = flowPredictorArr[1]:clone('weight','bias','gradWeight','gradBias')
+	local warping = warp_by_flow(height, width)
+	local waped_input = {input,initOffsets} - warping
+	flowArr[i] = {waped_input,initOffsets} - flowPredictorArr[i]
+    end
+
+    local offsets = flowArr[nLevels]
+    local warping = warp_by_flow(height,width)
+    --warping:evaluate()
+    local output = {input,offsets} - warping
+
+    local offsetSobelX_2 = offsets - nn.SobelXConv(2,2) - nn.Abs()
+    local offsetSobelY_2 = offsets - nn.SobelYConv(2,2) - nn.Abs()
+    local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() nn.MulConstant(0.5)
+
+    netG = nn.gModule({input},{output,offsetSobel})
     return netG
 end
 
