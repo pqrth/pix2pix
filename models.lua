@@ -99,7 +99,7 @@ function defineG_unet(input_nc, output_nc, ngf)
     return netG
 end
 
-function defineG_unet_exposure(input_nc, output_nc, ngf)
+function defineG_unet_raw(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
     -- input is (nc) x 256 x 256
@@ -141,15 +141,36 @@ function defineG_unet_exposure(input_nc, output_nc, ngf)
     local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
     -- input is (ngf) x128 x 128
     local d7 = {d7_,e1} - nn.JoinTable(2)
-    local d8_ = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(output_nc)
+    local d8_ = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1)
     -- input is (nc) x 256 x 256
+
+    netG = nn.gModule({input},{d8_})
+    return netG
+
+
+function defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
+    local netG = nil
+    local input = - nn.Identity()
+
+    local d8_ = input - defineG_unet_raw(input_nc, output_nc, ngf) - nn.SpatialBatchNormalization(output_nc)
 
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
     local d8 = {d8_,input_deprocess} - nn.JoinTable(2)
     local d9_ = d8 - nn.ReLU(true) - nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1) - nn.ReLU(true)
     local shadowMap = {d9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
-    local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
+    local shadowMap_ = shadowMap - nn.MulConstant(2) - nn.AddConstant(-1)
 
+    netG = nn.gModule({input},{shadowMap_})
+    return netG
+end
+
+function defineG_unet_exposure(input_nc, output_nc, ngf)
+    local netG = nil
+    local input = - nn.Identity()
+    local shadowMap = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
+
+    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
+    local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
     local output = {input_deprocess,shadowMapInv} - nn.CMulTable()
 
     local output_ = output - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
@@ -166,46 +187,7 @@ end
 function defineG_unet_exposure_simple(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
-    -- input is (nc) x 256 x 256
-    local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
-    -- input is (ngf) x 128 x 128
-    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local e4 = e3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local e5 = e4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 8 x 8
-    local e6 = e5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 4 x 4
-    local e7 = e6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 2 x 2
-    local e8 = e7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 1 x 1
-
-    local d1_ = e8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 2 x 2
-    local d1 = {d1_,e7} - nn.JoinTable(2)
-    local d2_ = d1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 4 x 4
-    local d2 = {d2_,e6} - nn.JoinTable(2)
-    local d3_ = d2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 8 x 8
-    local d3 = {d3_,e5} - nn.JoinTable(2)
-    local d4_ = d3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local d4 = {d4_,e4} - nn.JoinTable(2)
-    local d5_ = d4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local d5 = {d5_,e3} - nn.JoinTable(2)
-    local d6_ = d5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local d6 = {d6_,e2} - nn.JoinTable(2)
-    local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
-    -- input is (ngf) x128 x 128
-    local d7 = {d7_,e1} - nn.JoinTable(2)
-    local d8 = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.ReLU(true)
+    local d8 = input - defineG_unet_raw(input_nc, output_nc, ngf) - nn.ReLU(true)
     -- input is (nc) x 256 x 256
 
     --local o1 = d8 - nn.Tanh()
@@ -421,55 +403,14 @@ shadowSobel_: map of magnitude of sobel filter filter output on shadow map
 function defineG_unet_exposure_shadow_map2(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
-    -- input is (nc) x 256 x 256
-    local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
-    -- input is (ngf) x 128 x 128
-    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local e4 = e3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local e5 = e4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 8 x 8
-    local e6 = e5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 4 x 4
-    local e7 = e6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 2 x 2
-    local e8 = e7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 1 x 1
 
-    local d1_ = e8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 2 x 2
-    local d1 = {d1_,e7} - nn.JoinTable(2)
-    local d2_ = d1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 4 x 4
-    local d2 = {d2_,e6} - nn.JoinTable(2)
-    local d3_ = d2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 8 x 8
-    local d3 = {d3_,e5} - nn.JoinTable(2)
-    local d4_ = d3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local d4 = {d4_,e4} - nn.JoinTable(2)
-    local d5_ = d4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local d5 = {d5_,e3} - nn.JoinTable(2)
-    local d6_ = d5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local d6 = {d6_,e2} - nn.JoinTable(2)
-    local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
-    -- input is (ngf) x128 x 128
-    local d7 = {d7_,e1} - nn.JoinTable(2)
-    local d8_ = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(output_nc)
-    -- input is (nc) x 256 x 256
+    local shadowMap = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
 
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
-    local d8 = {d8_,input_deprocess} - nn.JoinTable(2)
-    local d9_ = d8 - nn.ReLU(true) - nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1) - nn.ReLU(true)
-    local shadowMap = {d9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
-    local d9 = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
+    local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
+    local output = {input_deprocess,shadowMapInv} - nn.CMulTable()
 
-    local o1_ = {input_deprocess,d9} - nn.CMulTable()
+    local o1_ = output
     local o2 = o1_ - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
 
     local correlation_window_size = 5
@@ -527,46 +468,7 @@ end
 function defineG_unet_exposure_shadow_masked(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
-    -- input is (nc) x 256 x 256
-    local e1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
-    -- input is (ngf) x 128 x 128
-    local e2 = e1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local e3 = e2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local e4 = e3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local e5 = e4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 8 x 8
-    local e6 = e5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 4 x 4
-    local e7 = e6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 2 x 2
-    local e8 = e7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 1 x 1
-
-    local d1_ = e8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 2 x 2
-    local d1 = {d1_,e7} - nn.JoinTable(2)
-    local d2_ = d1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 4 x 4
-    local d2 = {d2_,e6} - nn.JoinTable(2)
-    local d3_ = d2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 8 x 8
-    local d3 = {d3_,e5} - nn.JoinTable(2)
-    local d4_ = d3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local d4 = {d4_,e4} - nn.JoinTable(2)
-    local d5_ = d4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local d5 = {d5_,e3} - nn.JoinTable(2)
-    local d6_ = d5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local d6 = {d6_,e2} - nn.JoinTable(2)
-    local d7_ = d6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
-    -- input is (ngf) x128 x 128
-    local d7 = {d7_,e1} - nn.JoinTable(2)
-    local d8_ = d7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(output_nc)
+    local d8_ = input - defineG_unet_raw(input_nc, output_nc, ngf) - nn.SpatialBatchNormalization(output_nc)
     -- input is (nc) x 256 x 256
 
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
