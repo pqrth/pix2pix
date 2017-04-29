@@ -139,6 +139,9 @@ function defineG(input_nc, output_nc, ngf)
     return netG
 end
 
+netLoss = define_loss()
+netLoss:apply(weights_init)
+
 function defineD(input_nc, output_nc, ndf)
     local netD = nil
     if opt.condition_GAN==1 then
@@ -205,6 +208,7 @@ local fake_shadowMaskSoft = torch.Tensor(opt.batchSize, output_nc, opt.fineSize,
 local fake_shadowSobel = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
 local fake_shadowSobel_dw = torch.Tensor(opt.batchSize, output_nc, opt.fineSize/4, opt.fineSize/4)
 local fake_B_masked = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
+local fake_loss_tensor = torch.Tensor(opt.batchSize, output_nc*2, opt.fineSize, opt.fineSize)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
 local errD, errG, errL1, errNGC, errNGC_dw, errSobel, errSobel_dw, errL1_masked = 0, 0, 0, 0, 0, 0, 0, 0
@@ -229,9 +233,11 @@ if opt.gpu > 0 then
    fake_shadowMaskSoft = fake_shadowMaskSoft:cuda();
    fake_B_masked = fake_B_masked:cuda();
    fake_shadow_masked = fake_shadow_masked:cuda();
+   fake_loss_tensor = fake_loss_tensor:cuda();
    if opt.cudnn==1 then
-      netG = util.cudnn(netG); netD = util.cudnn(netD);
+      netG = util.cudnn(netG); netD = util.cudnn(netD); netLoss = util.cudnn(netLoss)
    end
+   netLoss:cuda()
    netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda(); criterionNGC:cuda(); criterionNGC_dw:cuda(); criterionSobel_dw:cuda(); criterionAE_masked:cuda();
    print('done')
 else
@@ -280,6 +286,7 @@ function createRealFake()
 	local netGoutput = netG:forward(real_A)
 	fake_B = netGoutput[1]
 	fake_shadowMap = netGoutput[2]
+	fake_loss_tensor = netLoss:forward({real_A,fake_shadowMap,real_B})
     elseif opt.which_model_netG == "unet_exposure_shadow_masked" then
         local netGoutput = netG:forward(real_A)
         fake_B = netGoutput[1]
@@ -297,8 +304,6 @@ function createRealFake()
     else
         fake_AB = fake_B -- unconditional GAN, only penalizes structure in B
     end
-    local predict_real = netD:forward(real_AB)
-    local predict_fake = netD:forward(fake_AB)
 end
 
 -- create closure to evaluate f(X) and df/dX of discriminator
@@ -406,8 +411,15 @@ local fGx = function(x)
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
       netG:backward(real_A, {df__, df__:clone():fill(0), df__:clone():fill(0)})
     elseif opt.which_model_netG == "unet_exposure" then
+      local zero_loss_tensor = fake_loss_tensor:clone():fill(0)
+      local df_do_AE_masked = fake_loss_tensor:clone():fill(0)
+      errL1_masked = criterionAE_masked:forward(fake_loss_tensor,zero_loss_tensor)
+      local dfAE1 = criterionAE_masked:backward(fake_loss_tensor,zero_loss_tensor)
+      local dfAE2 = netLoss:updateGradInput({real_A,fake_shadowMap,real_B},dfAE1)
+      df_do_AE_masked = dfAE2[2]
+      df_do_AE_masked = df_do_AE_masked:mul(opt.lambda)
       local df__ = df_dg + df_do_AE:mul(opt.lambda)
-      netG:backward(real_A, {df__, df__:clone():fill(0)})
+      netG:backward(real_A, {df__, df_do_AE_masked})
     elseif opt.which_model_netG == "unet_exposure_shadow_masked" then
       
       local df_do_AE_masked = fake_B_masked:clone():fill(0)

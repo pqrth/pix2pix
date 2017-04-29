@@ -146,7 +146,7 @@ function defineG_unet_raw(input_nc, output_nc, ngf)
 
     netG = nn.gModule({input},{d8_})
     return netG
-
+end
 
 function defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
     local netG = nil
@@ -167,14 +167,14 @@ end
 function defineG_unet_exposure(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
-    local shadowMap = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
+    local shadowMap_ = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
 
+    local shadowMap = shadowMap_ - nn.AddConstant(1) - nn.MulConstant(0.5)
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
     local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
     local output = {input_deprocess,shadowMapInv} - nn.CMulTable()
 
     local output_ = output - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
-    local shadowMap_ = shadowMap - nn.MulConstant(2) - nn.AddConstant(-1)
 
     netG = nn.gModule({input},{output_,shadowMap_})
 
@@ -404,8 +404,7 @@ function defineG_unet_exposure_shadow_map2(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
 
-    local shadowMap = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
-
+    local shadowMap = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf) - nn.AddConstant(1) - nn.MulConstant(0.5)
     local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
     local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
     local output = {input_deprocess,shadowMapInv} - nn.CMulTable()
@@ -492,55 +491,11 @@ function defineG_unet_exposure_shadow_masked(input_nc, output_nc, ngf)
     local inputDepMaskedRecip = inputDepMasked - nn.Power(-1)
     local outputmasked = {input_deprocess,inputDepMaskedRecip} - nn.CMulTable()
 
-    local ee1 = input - nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1)
-    -- input is (ngf) x 128 x 128
-    local ee2 = ee1 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local ee3 = ee2 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local ee4 = ee3 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local ee5 = ee4 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 8 x 8
-    local ee6 = ee5 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 4 x 4
-    local ee7 = ee6 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 2 x 2
-    local ee8 = ee7 - nn.LeakyReLU(0.2, true) - nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 1 x 1
+    local shadowMap = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
 
-    local dd1_ = ee8 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 2 x 2
-    local dd1 = {dd1_,ee7} - nn.JoinTable(2)
-    local dd2_ = dd1 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 4 x 4
-    local dd2 = {dd2_,ee6} - nn.JoinTable(2)
-    local dd3_ = dd2 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8) - nn.Dropout(0.5)
-    -- input is (ngf * 8) x 8 x 8
-    local dd3 = {dd3_,ee5} - nn.JoinTable(2)
-    local dd4_ = dd3 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 8)
-    -- input is (ngf * 8) x 16 x 16
-    local dd4 = {dd4_,ee4} - nn.JoinTable(2)
-    local dd5_ = dd4 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 4)
-    -- input is (ngf * 4) x 32 x 32
-    local dd5 = {dd5_,ee3} - nn.JoinTable(2)
-    local dd6_ = dd5 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf * 2)
-    -- input is (ngf * 2) x 64 x 64
-    local dd6 = {dd6_,ee2} - nn.JoinTable(2)
-    local dd7_ = dd6 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(ngf)
-    -- input is (ngf) x128 x 128
-    local dd7 = {dd7_,ee1} - nn.JoinTable(2)
-    local dd8_ = dd7 - nn.ReLU(true) - nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1) - nn.SpatialBatchNormalization(output_nc)
-    
-    local dd8 = {dd8_,input_deprocess} - nn.JoinTable(2)
-    local dd9_ = dd8 - nn.ReLU(true) - nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1) - nn.ReLU(true)
-    
-    local shadowMap = {dd9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()
-
-    --local shadowMap = {d9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
-    local shadowMapReciprocal = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
-
-    local output = {input_deprocess,shadowMapReciprocal} - nn.CMulTable()
+    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
+    local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
+    local output = {input_deprocess,shadowMapInv} - nn.CMulTable()
 
     local shadowMapBlurred = shadowMap - nn.GaussianConv(output_nc,output_nc,5) - nn.SpatialMaxPooling(5, 5, 1, 1, 2, 2)
     local shadowMapBlurredMasked = {shadowMapBlurred,mask3D_comp} - nn.CMulTable()
@@ -559,6 +514,56 @@ function defineG_unet_exposure_shadow_masked(input_nc, output_nc, ngf)
 
     netG = nn.gModule({input},{output_, outputmasked_, shadowMap_, outputModified_,shadowMapModified_,mask3D_,mask3D_soft_})
     return netG
+end
+
+
+do
+    local ThresholdMask, parent = torch.class('nn.ThresholdMask', 'nn.Identity')
+      function ThresholdMask:__init(threshold)
+        parent.__init(self)
+        self.threshold = threshold
+      end
+
+      function ThresholdMask:updateOutput(input)
+   	local threshTensor = input:clone():fill(self.threshold)
+	self.output = input:gt(threshTensor):typeAs(input)
+   	return self.output
+      end
+
+      function ThresholdMask:updateGradInput(input, gradOutput)
+        self.gradInput = gradOutput:clone():fill(0)
+        return self.gradInput
+      end
+end
+
+function define_loss()
+    local net = nil
+    local input_ = - nn.Identity()
+    --local output_ = - nn.Identity()
+    local shadowMap_ = - nn.Identity()
+    local GroundTruth_ = - nn.Identity()
+
+    local input = input_ - nn.AddConstant(1) - nn.MulConstant(0.5)
+    --local output = output_ - nn.AddConstant(1) - nn.MulConstant(0.5)
+    local shadowMap = shadowMap_ - nn.Identity() - nn.AddConstant(1) - nn.MulConstant(0.5)
+    local GroundTruth = GroundTruth_ - nn.Identity() - nn.AddConstant(1) - nn.MulConstant(0.5)
+
+    --local l1_outputVsGT = {GroundTruth,output} - nn.CSubTable() - nn.Abs()
+    
+    local whiteMask = GroundTruth - nn.ThresholdMask(254.0/255.0)
+    local shadow_minus_input = {shadowMap,input} - nn.CSubTable() - nn.Abs()
+    local l1_shadow_minus_input_whiteMask = {shadow_minus_input,whiteMask} - nn.CMulTable()
+
+    local whiteMaskComp = whiteMask - nn.AddConstant(-1) - nn.MulConstant(-1)
+    local shadowAve = shadowMap - nn.SpatialAveragePooling(5,5,1,1,2,2)
+    local log_shadow = {shadowAve,shadowMap} - nn.CSubTable() - nn.Abs()
+    local l1_log = {log_shadow,whiteMaskComp} - nn.CMulTable()
+
+    local lossTensor = {l1_shadow_minus_input_whiteMask,l1_log} - nn.JoinTable(2)
+    net = nn.gModule({input_,shadowMap_,GroundTruth_},{lossTensor})
+
+    --net = nn.gModule({output_,GroundTruth_},{l1_outputVsGT})
+return net
 end
 
 function defineG_unet_128(input_nc, output_nc, ngf)
