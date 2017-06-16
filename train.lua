@@ -51,6 +51,7 @@ opt = {
    which_model_netG = 'unet',  -- selects model to use for netG
    n_layers_D = 0,             -- only used if which_model_netD=='n_layers'
    lambda = 100,               -- weight on L1 term in objective
+   useTPS = 0,
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -211,22 +212,27 @@ function createRealFake()
     data_tm:stop()
     
     --real_A:copy(real_data[{ {}, idx_A, {}, {} }])
-    real_A:copy(real_data[{ {}, idx_B, {}, {} }])
-    real_B:copy(real_data[{ {}, idx_B, {}, {} }])
+    if opt.useTPS == 0 then
+	real_A:copy(real_data[{ {}, idx_A, {}, {} }])
+	real_B:copy(real_data[{ {}, idx_B, {}, {} }])
+    else
+	real_A:copy(real_data[{ {}, idx_B, {}, {} }])
+    	real_B:copy(real_data[{ {}, idx_B, {}, {} }])
 
-    -- artificial warping (data augmentation)
-    for ind = 1, real_A:size(1) do
-	local im = torch.Tensor(real_A[ind]:size()):copy(real_A[ind])
-	pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
-	im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
-	real_A[ind]:copy(im)
-	--[[img1 = torch.zeros(im:size())
-	scaleSize = torch.floor(im:size()[2]*.8)
-	pad = torch.floor((im:size()[2]-scaleSize)/2)
-	im = image.scale(im, scaleSize,'bilinear')
-	img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
-	img1 = image.rotate(img1,0.24*(torch.uniform()*2-1),'bilinear')
-	real_A[ind]:copy(img1)]]--
+    	-- artificial warping (data augmentation)
+    	for ind = 1, real_A:size(1) do
+	    local im = torch.Tensor(real_A[ind]:size()):copy(real_A[ind])
+	    pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
+	    im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
+	    real_A[ind]:copy(im)
+	    --[[img1 = torch.zeros(im:size())
+	    scaleSize = torch.floor(im:size()[2]*.8)
+	    pad = torch.floor((im:size()[2]-scaleSize)/2)
+	    im = image.scale(im, scaleSize,'bilinear')
+	    img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
+	    img1 = image.rotate(img1,0.24*(torch.uniform()*2-1),'bilinear')
+	    real_A[ind]:copy(img1)]]--
+    	end
     end
 
     if opt.condition_GAN==1 then

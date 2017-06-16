@@ -6,6 +6,8 @@
 require 'image'
 require 'nn'
 require 'nngraph'
+require 'models'
+require 'warp2d'
 util = paths.dofile('util/util.lua')
 torch.setdefaulttensortype('torch.FloatTensor')
 
@@ -32,6 +34,7 @@ opt = {
     checkpoints_dir = './checkpoints', -- loads models from here
     results_dir='./results/',          -- saves results here
     which_epoch = 'latest',            -- which epoch to test? set to 'latest' to use latest cached model
+    useTPS = 0,
 }
 
 
@@ -99,8 +102,28 @@ for n=1,math.floor(opt.how_many/opt.batchSize) do
     filepaths_curr = util.basename_batch(filepaths_curr)
     print('filepaths_curr: ', filepaths_curr)
     
-    input = data_curr[{ {}, idx_A, {}, {} }]
-    target = data_curr[{ {}, idx_B, {}, {} }]
+    if opt.useTPS == 0 then
+	input = data_curr[{ {}, idx_A, {}, {} }]
+	target = data_curr[{ {}, idx_B, {}, {} }]
+    else
+    	input:copy(data_curr[{ {}, idx_B, {}, {} }])
+    	target:copy(data_curr[{ {}, idx_B, {}, {} }]) 
+
+    	-- artificial warping (data augmentation)
+    	for ind = 1, input:size(1) do
+            local im = torch.Tensor(input[ind]:size()):copy(input[ind])
+            pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
+            im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
+            input[ind]:copy(im)
+            --[[img1 = torch.zeros(im:size())
+            scaleSize = torch.floor(im:size()[2]*.8)
+            pad = torch.floor((im:size()[2]-scaleSize)/2)
+            im = image.scale(im, scaleSize,'bilinear')
+            img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
+            img1 = image.rotate(img1,0.24*(torch.uniform()*2-1),'bilinear')
+            real_A[ind]:copy(img1)]]--
+    	end
+    end	
     
     if opt.gpu > 0 then
         input = input:cuda()
@@ -113,8 +136,9 @@ for n=1,math.floor(opt.how_many/opt.batchSize) do
        local target_AB = target:float()
        target = util.deprocessLAB_batch(input_L, target_AB)
        input = util.deprocessL_batch(input_L)
-    else 
-        output = util.deprocess_batch(netG:forward(input))
+    else
+        outNet = netG:forward(input) 
+        output = util.deprocess_batch(outNet[1])
         input = util.deprocess_batch(input):float()
         output = output:float()
         target = util.deprocess_batch(target):float()
