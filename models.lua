@@ -45,7 +45,7 @@ function defineG_encoder_decoder(input_nc, output_nc, ngf)
 
     return netG
 end
-
+--[[
 function defineG_unet(input_nc, output_nc, ngf)
     local netG = nil
     -- input is (nc) x 256 x 256
@@ -98,7 +98,7 @@ function defineG_unet(input_nc, output_nc, ngf)
     
     return netG
 end
-
+]]--
 function defineG_unet_raw(input_nc, output_nc, ngf)
     local netG = nil
     local input = - nn.Identity()
@@ -148,35 +148,90 @@ function defineG_unet_raw(input_nc, output_nc, ngf)
     return netG
 end
 
+function defineG_unet_raw_nn(input_nc, output_nc, ngf)
+    local netG = nil
+    -- input is (nc) x 256 x 256
+    local e1 = nn.Sequential():add(nn.SpatialConvolution(input_nc, ngf, 4, 4, 2, 2, 1, 1))
+    -- input is (ngf) x 128 x 128
+    local e2 = nn.Sequential():add(e1):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf, ngf * 2, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 2))
+    -- input is (ngf * 2) x 64 x 64
+    local e3 = nn.Sequential():add(e2):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf * 2, ngf * 4, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 4))
+    -- input is (ngf * 4) x 32 x 32
+    local e4 = nn.Sequential():add(e3):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf * 4, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8))
+    -- input is (ngf * 8) x 16 x 16
+    local e5 = nn.Sequential():add(e4):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8))
+    -- input is (ngf * 8) x 8 x 8
+    local e6 = nn.Sequential():add(e5):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8))
+    -- input is (ngf * 8) x 4 x 4
+    local e7 = nn.Sequential():add(e6):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8))
+    -- input is (ngf * 8) x 2 x 2
+    local e8 = nn.Sequential():add(e7):add(nn.LeakyReLU(0.2, true)):add(nn.SpatialConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8))
+    -- input is (ngf * 8) x 1 x 1
+
+    local d1_ = nn.Sequential():add(e8):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 8, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8)):add(nn.Dropout(0.5))
+    -- input is (ngf * 8) x 2 x 2
+    local d1 = nn.Sequential():add(nn.ConcatTable():add(d1_):add(e7)):add(nn.JoinTable(2))
+    local d2_ = nn.Sequential():add(d1):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8)):add(nn.Dropout(0.5))
+    -- input is (ngf * 8) x 4 x 4
+    local d2 = nn.Sequential():add(nn.ConcatTable():add(d2_):add(e6)):add(nn.JoinTable(2))
+    local d3_ = nn.Sequential():add(d2):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8)):add(nn.Dropout(0.5))
+    -- input is (ngf * 8) x 8 x 8
+    local d3 = nn.Sequential():add(nn.ConcatTable():add(d3_):add(e5)):add(nn.JoinTable(2))
+    local d4_ = nn.Sequential():add(d3):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 8, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 8))
+    -- input is (ngf * 8) x 16 x 16
+    local d4 = nn.Sequential():add(nn.ConcatTable():add(d4_):add(e4)):add(nn.JoinTable(2))
+    local d5_ = nn.Sequential():add(d4):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 8 * 2, ngf * 4, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 4))
+    -- input is (ngf * 4) x 32 x 32
+    local d5 = nn.Sequential():add(nn.ConcatTable():add(d5_):add(e3)):add(nn.JoinTable(2))
+    local d6_ = nn.Sequential():add(d5):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 4 * 2, ngf * 2, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf * 2))
+    -- input is (ngf * 2) x 64 x 64
+    local d6 = nn.Sequential():add(nn.ConcatTable():add(d6_):add(e2)):add(nn.JoinTable(2))
+    local d7_ = nn.Sequential():add(d6):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 2 * 2, ngf, 4, 4, 2, 2, 1, 1)):add(nn.SpatialBatchNormalization(ngf))
+    -- input is (ngf) x128 x 128
+    local d7 = nn.Sequential():add(nn.ConcatTable():add(d7_):add(e1)):add(nn.JoinTable(2))
+    local d8_ = nn.Sequential():add(d7):add(nn.ReLU(true)):add(nn.SpatialFullConvolution(ngf * 2, output_nc, 4, 4, 2, 2, 1, 1))
+    -- input is (nc) x 256 x 256
+
+    netG = d8_
+    return netG
+end
+
+function defineG_unet(input_nc, output_nc, ngf)
+    local netG = nil
+    local d8 = defineG_unet_raw_nn(input_nc, output_nc, ngf)
+    netG = nn.Sequential():add(d8):add(nn.Tanh())
+    return netG
+end
+
 function defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
     local netG = nil
-    local input = - nn.Identity()
+    local input = nn.Sequential():add(nn.Identity())
 
-    local d8_ = input - defineG_unet_raw(input_nc, output_nc, ngf) - nn.SpatialBatchNormalization(output_nc)
+    local d8_ = nn.Sequential():add(input):add(defineG_unet_raw_nn(input_nc, output_nc, ngf)):add(nn.SpatialBatchNormalization(output_nc))
 
-    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
-    local d8 = {d8_,input_deprocess} - nn.JoinTable(2)
-    local d9_ = d8 - nn.ReLU(true) - nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1) - nn.ReLU(true)
-    local shadowMap = {d9_,input_deprocess} - nn.CAddTable() - nn.AddConstant(0.00001) - nn.HardTanh()   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
-    local shadowMap_ = shadowMap - nn.MulConstant(2) - nn.AddConstant(-1)
+    local input_deprocess = nn.Sequential():add(input):add(nn.AddConstant(1)):add(nn.MulConstant(0.5))  -- deprocess input image [-1,1] to [0,1]
+    local d8 = nn.Sequential():add(nn.ConcatTable():add(d8_):add(input_deprocess)):add(nn.JoinTable(2))
+    local d9_ = nn.Sequential():add(d8):add(nn.ReLU(true)):add(nn.SpatialConvolution(output_nc * 2, output_nc, 3, 3, 1, 1, 1, 1)):add(nn.ReLU(true))
+    local shadowMap = nn.Sequential():add(nn.ConcatTable():add(d9_):add(input_deprocess)):add(nn.CAddTable()):add(nn.AddConstant(0.00001)):add(nn.HardTanh())   -- already >=input_deprocess>=0, so hardTanh produces between [input_deprocess,1]
+    local shadowMap_ = nn.Sequential():add(shadowMap):add(nn.MulConstant(2)):add(nn.AddConstant(-1))
 
-    netG = nn.gModule({input},{shadowMap_})
+    netG = shadowMap_
     return netG
 end
 
 function defineG_unet_exposure(input_nc, output_nc, ngf)
     local netG = nil
-    local input = - nn.Identity()
-    local shadowMap_ = input - defineG_unet_shadowPrediction(input_nc, output_nc, ngf)
+    local input = nn.Sequential():add(nn.Identity())
+    local shadowMap_ = nn.Sequential():add(input):add(defineG_unet_shadowPrediction(input_nc, output_nc, ngf))
 
-    local shadowMap = shadowMap_ - nn.AddConstant(1) - nn.MulConstant(0.5)
-    local input_deprocess = input - nn.AddConstant(1) - nn.MulConstant(0.5)  -- deprocess input image [-1,1] to [0,1]
-    local shadowMapInv = shadowMap - nn.Power(-1)  -- [1, 1/input_deprocess]
-    local output = {input_deprocess,shadowMapInv} - nn.CMulTable()
+    local shadowMap = nn.Sequential():add(shadowMap_):add(nn.AddConstant(1)):add(nn.MulConstant(0.5))
+    local input_deprocess = nn.Sequential():add(input):add(nn.AddConstant(1)):add(nn.MulConstant(0.5))  -- deprocess input image [-1,1] to [0,1]
+    local shadowMapInv = nn.Sequential():add(shadowMap):add(nn.Power(-1))  -- [1, 1/input_deprocess]
+    local output = nn.Sequential():add(nn.ConcatTable():add(input_deprocess):add(shadowMapInv)):add(nn.CMulTable())
 
-    local output_ = output - nn.MulConstant(2) - nn.AddConstant(-1)  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
+    local output_ = nn.Sequential():add(output):add(nn.MulConstant(2)):add(nn.AddConstant(-1))  -- clamp between [0,1] and process output cleaned image [0,1] to [-1,1]
 
-    netG = nn.gModule({input},{output_,shadowMap_})
+    netG = nn.Sequential():add(nn.ConcatTable():add(output_):add(shadowMap_))
 
     --graph.dot(netG.fg,'netG')
 
