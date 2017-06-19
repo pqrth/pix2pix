@@ -52,6 +52,7 @@ opt = {
    n_layers_D = 0,             -- only used if which_model_netD=='n_layers'
    lambda = 100,               -- weight on L1 term in objective
    useTPS = 0,
+   nScales = 3,
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -109,7 +110,7 @@ local fake_label = 0
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
     if     opt.which_model_netG == "encoder_decoder" then netG = defineG_encoder_decoder(input_nc, output_nc, ngf)
-    elseif opt.which_model_netG == "unet" then netG = dewarp_multiscale(input_nc, output_nc, ngf,opt.fineSize,opt.fineSize,3)
+    elseif opt.which_model_netG == "unet" then netG = dewarp_multiscale(input_nc, output_nc, ngf,opt.fineSize,opt.fineSize,opt.nScales)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
     else error("unsupported netG model")
     end
