@@ -3,8 +3,8 @@
 -- IEEE Trans. Pattern Anal. Mach. Intell. 11, 567-585, 1989. 
 
 require "image"
-
-
+require 'os'
+require 'cunn'
 
 utils = {}
 
@@ -19,7 +19,6 @@ warp2d = {}
 
 function warp2d.warp(im_in, pts_in, pts_def, method)
     
-
     local im_size = im_in:size()
 
     local imc = im_size[1]
@@ -45,7 +44,7 @@ function warp2d.warp(im_in, pts_in, pts_def, method)
         K[{{},{i}}] = torch.sum(torch.pow(dx, 2),2)
     end    
     local K = warp2d.rbf(K,r)
-    
+
     local P = torch.cat(torch.Tensor(num_pts,1):fill(1), pts_def, 2)
     
     local L = torch.cat(torch.cat(K,P,2),  torch.cat(P:t(), torch.Tensor(3,3):fill(0),2), 1)
@@ -62,22 +61,24 @@ function warp2d.warp(im_in, pts_in, pts_def, method)
     
     local nump = pt_xy:size()[1]
     local Kp = torch.Tensor(nump, num_pts):fill(0)
-    
-    
+    Kp = Kp:cuda();
+    pt_xy = pt_xy:cuda();
+
     for i=1,num_pts do
         local pt = pts_in[{i,{}}]
+        pt = pt:cuda()
         pt:resize(1,pt:size(1)):size()
         
-        local dx = torch.Tensor(nump, 2):fill(0):addmm(torch.Tensor(nump,1):fill(1), pt)
+        local dx = torch.CudaTensor(nump, 2):fill(0):addmm(torch.CudaTensor(nump,1):fill(1), pt)
         local dx = torch.add(dx, -pt_xy)
         
         Kp[{{},{i}}] = torch.sum(torch.pow(dx,2),2)
     end
     local Kp = warp2d.rbf(Kp, r)
+
+    local L = torch.cat(torch.cat(Kp, torch.CudaTensor(nump,1):fill(1)), pt_xy)
     
-    local L = torch.cat(torch.cat(Kp, torch.Tensor(nump,1):fill(1)), pt_xy)
-    
-    local pt_all = torch.Tensor(nump,2):fill(0):addmm(L, w)
+    local pt_all = torch.CudaTensor(nump,2):fill(0):addmm(L, w:cuda())
     
     -- print(pt_all[{{1},{}}])
     -- print(pt_all)
@@ -92,8 +93,7 @@ function warp2d.warp(im_in, pts_in, pts_def, method)
     
     local coords_orig = torch.cat(x,y,1)
     
-    local warpfield = torch.add(coords,-coords_orig)
-    
+    local warpfield = torch.add(coords:typeAs(coords_orig),-coords_orig)
     local img_out = image.warp(im_in, warpfield)
     return img_out, warpfield    
 end
@@ -112,7 +112,8 @@ function warp2d.gen_warp_pts(imsize, ndefpts, stdev_factor)
     local xpts_grd, ypts_grd = utils.meshgrid(xpts, ypts)
 
     local sel_mask = torch.ByteTensor(xpts_grd:size()):fill(0)
-    sel_mask[{{2,-2}, {2,-2}}] = 1
+    sel_mask[{{2,-2}, {2,-2}}] = 1  -- fixing boundary points
+    --sel_mask[{{}, {}}] = 1  -- disturbing boundary points as well
 
     local x_defpts_fixed = xpts_grd:maskedSelect(sel_mask)
     local y_defpts_fixed = ypts_grd:maskedSelect(sel_mask)

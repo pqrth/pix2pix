@@ -10,6 +10,7 @@ util = paths.dofile('util/util.lua')
 require 'image'
 require 'models'
 require 'warp2d'
+require 'os'
 
 opt = {
    DATA_ROOT = '',         -- path to images (should have subfolders 'train', 'val', etc)
@@ -45,7 +46,7 @@ opt = {
    checkpoints_dir = './checkpoints', -- models are saved here
    cudnn = 1,                         -- set to 0 to not use cudnn
    condition_GAN = 1,                 -- set to 0 to use unconditional discriminator
-   use_GAN = 1,                       -- set to 0 to turn off GAN term
+   use_GAN = 0,                       -- set to 0 to turn off GAN term
    use_L1 = 1,                        -- set to 0 to turn off L1 term
    which_model_netD = 'basic', -- selects model to use for netD
    which_model_netG = 'unet',  -- selects model to use for netG
