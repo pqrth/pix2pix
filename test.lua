@@ -112,16 +112,27 @@ for n=1,math.floor(opt.how_many/opt.batchSize) do
     	-- artificial warping (data augmentation)
     	for ind = 1, input:size(1) do
             local im = torch.Tensor(input[ind]:size()):copy(input[ind])
-            pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
-            im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
-            input[ind]:copy(im)
-            --[[img1 = torch.zeros(im:size())
-            scaleSize = torch.floor(im:size()[2]*.8)
+            img1 = torch.zeros(im:size())
+            scaleSize = torch.floor(im:size()[2]*torch.uniform(0.6,1))
             pad = torch.floor((im:size()[2]-scaleSize)/2)
             im = image.scale(im, scaleSize,'bilinear')
             img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
-            img1 = image.rotate(img1,0.24*(torch.uniform()*2-1),'bilinear')
-            real_A[ind]:copy(img1)]]--
+            target:copy(img1)
+
+            img1 = image.rotate(img1,torch.bernoulli(0.6)*0.24*(torch.uniform()*2-1),'bilinear')
+            im = img1
+            pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
+            im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
+            input[ind]:copy(im)
+
+            --[[img1 = torch.zeros(im:size())
+            scaleSize = torch.floor(im:size()[2]*torch.uniform(0.6,1))
+            pad = torch.floor((im:size()[2]-scaleSize)/2)
+            im = image.scale(im, scaleSize,'bilinear')
+            img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
+            img1 = image.rotate(img1,torch.bernoulli(0.6)*0.24*(torch.uniform()*2-1),'bilinear')
+            --real_A[ind]:copy(img1)
+            input[ind]:copy(img1)--]]
     	end
     end	
     

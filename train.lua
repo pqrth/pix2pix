@@ -227,19 +227,21 @@ function createRealFake()
     	real_B[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_B, {}, {} }]:clone()
 
     	-- artificial warping (data augmentation)
-    	for ind = 1, real_A:size(1) do
-	    local im = torch.Tensor(real_A[ind]:size()):copy(real_A[ind])
-	    pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
-	    im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
-	    real_A[ind]:copy(im)
-	    --[[img1 = torch.zeros(im:size())
-	    scaleSize = torch.floor(im:size()[2]*.8)
-	    pad = torch.floor((im:size()[2]-scaleSize)/2)
-	    im = image.scale(im, scaleSize,'bilinear')
-	    img1[{{},{pad+1,pad+scaleSize},{pad+1,pad+scaleSize}}] = im[{{},{},{}}]
-	    img1 = image.rotate(img1,0.24*(torch.uniform()*2-1),'bilinear')
-	    real_A[ind]:copy(img1)]]--
-    	end
+        for ind = 1, real_A:size(1) do
+            local im = torch.Tensor(real_A[ind]:size()):copy(real_A[ind])
+            img1 = torch.zeros(im:size())
+            scaleSize = torch.floor(im:size()[2]*torch.uniform(0.6,1))
+            padng = torch.floor((im:size()[2]-scaleSize)/2)
+            im = image.scale(im, scaleSize,'bilinear')
+            img1[{{},{padng+1,padng+scaleSize},{padng+1,padng+scaleSize}}] = im[{{},{},{}}]
+            real_B[ind]:copy(img1)
+
+            img1 = image.rotate(img1,torch.bernoulli(0.6)*0.24*(torch.uniform()*2-1),'bilinear')
+            im = img1
+            pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
+            im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
+            real_A[ind]:copy(im)
+        end
     end
 --    print('done createrealfake')
 
