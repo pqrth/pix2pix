@@ -54,6 +54,7 @@ opt = {
    lambda = 100,               -- weight on L1 term in objective
    useTPS = 0,
    nScales = 3,
+   pad = 0,                    -- set non zero to pad by that much margin 
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -111,7 +112,7 @@ local fake_label = 0
 function defineG(input_nc, output_nc, ngf)
     local netG = nil
     if     opt.which_model_netG == "encoder_decoder" then netG = defineG_encoder_decoder(input_nc, output_nc, ngf)
-    elseif opt.which_model_netG == "unet" then netG = dewarp_multiscale(input_nc, output_nc, ngf,opt.fineSize,opt.fineSize,opt.nScales)
+    elseif opt.which_model_netG == "unet" then netG = dewarp_multiscale(input_nc, output_nc, ngf,opt.fineSize+opt.pad*2,opt.fineSize+opt.pad*2,opt.nScales)
     elseif opt.which_model_netG == "unet_128" then netG = defineG_unet_128(input_nc, output_nc, ngf)
     else error("unsupported netG model")
     end
@@ -170,12 +171,13 @@ optimStateD = {
    beta1 = opt.beta1,
 }
 ----------------------------------------------------------------------------
-local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize, opt.fineSize)
-local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
-local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize, opt.fineSize)
-local fake_offsetSobel = torch.Tensor(opt.batchSize, 2, opt.fineSize, opt.fineSize)
-local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
-local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize, opt.fineSize)
+pad = opt.pad
+local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local fake_offsetSobel = torch.Tensor(opt.batchSize, 2, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local errD, errG, errL1, errSobel = 0, 0, 0, 0
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
@@ -208,18 +210,21 @@ if opt.display then disp = require 'display' end
 
 
 function createRealFake()
+--    print('enter createrealfake')
     -- load real
     data_tm:reset(); data_tm:resume()
     local real_data, data_path = data:getBatch()
     data_tm:stop()
-    
+
     --real_A:copy(real_data[{ {}, idx_A, {}, {} }])
+    real_A:fill(0)
+    real_B:fill(0)
     if opt.useTPS == 0 then
-	real_A:copy(real_data[{ {}, idx_A, {}, {} }])
-	real_B:copy(real_data[{ {}, idx_B, {}, {} }])
+	real_A[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_A, {}, {} }]:clone()
+	real_B[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_B, {}, {} }]:clone()
     else
-	real_A:copy(real_data[{ {}, idx_B, {}, {} }])
-    	real_B:copy(real_data[{ {}, idx_B, {}, {} }])
+	real_A[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_B, {}, {} }]:clone()
+    	real_B[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_B, {}, {} }]:clone()
 
     	-- artificial warping (data augmentation)
     	for ind = 1, real_A:size(1) do
@@ -236,6 +241,7 @@ function createRealFake()
 	    real_A[ind]:copy(img1)]]--
     	end
     end
+--    print('done createrealfake')
 
     if opt.condition_GAN==1 then
         real_AB = torch.cat(real_A,real_B,2)

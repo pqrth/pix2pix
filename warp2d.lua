@@ -112,8 +112,8 @@ function warp2d.gen_warp_pts(imsize, ndefpts, stdev_factor)
     local xpts_grd, ypts_grd = utils.meshgrid(xpts, ypts)
 
     local sel_mask = torch.ByteTensor(xpts_grd:size()):fill(0)
-    sel_mask[{{2,-2}, {2,-2}}] = 1  -- fixing boundary points
-    --sel_mask[{{}, {}}] = 1  -- disturbing boundary points as well
+    --sel_mask[{{2,-2}, {2,-2}}] = 1  -- fixing boundary points
+    sel_mask[{{}, {}}] = 1  -- disturbing boundary points as well
 
     local x_defpts_fixed = xpts_grd:maskedSelect(sel_mask)
     local y_defpts_fixed = ypts_grd:maskedSelect(sel_mask)

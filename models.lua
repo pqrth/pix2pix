@@ -1,6 +1,6 @@
 require 'nngraph'
 require 'gvnn'
-require 'spy'
+--require 'spy'
 
 function defineG_encoder_decoder(input_nc, output_nc, ngf)
     local netG = nil 
