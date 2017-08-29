@@ -421,11 +421,33 @@ function dewarp_multiscale(input_nc, output_nc, ngf, height, width, nLevels)
     local offsetSobelY_2 = offsets - nn.SobelYConv(2,2) - nn.Abs()
     local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() nn.MulConstant(0.5)
  
-    netG = nn.gModule({input},{output,offsetSobel})
+    netG = nn.gModule({input},{output,offsetSobel,offsets,flowArr[nLevels-1],flowArr[nLevels-2]})
     return netG
 
 end
 
+function define_loss(height, width)
+    local net = nil
+    local input_ = - nn.Identity()
+    local GT_ = - nn.Identity()
+    local flowBy2 = - nn.Identity()
+    local flowBy4 = - nn.Identity()
+
+    local input = input_ - nn.AddConstant(1) - nn.MulConstant(0.5)
+    local GT = GT_ - nn.AddConstant(1) - nn.MulConstant(0.5)
+    local inputBy2 = input - nn.SpatialAveragePooling(2,2,2,2)
+    local inputBy4 = inputBy2 - nn.SpatialAveragePooling(2,2,2,2)
+    local GTby2 = GT - nn.SpatialAveragePooling(2,2,2,2)
+    local GTby4 = GTby2 - nn.SpatialAveragePooling(2,2,2,2)
+
+    local dewarpBy2 = {inputBy2,flowBy2} - warp_by_flow(height/2, width/2)
+    local dewarpBy4 = {inputBy4,flowBy4} - warp_by_flow(height/4, width/4)
+
+    local errBy2 = {GTby2,dewarpBy2} - nn.CSubTable() - nn.Abs()
+    local errBy4 = {GTby4,dewarpBy4} - nn.CSubTable() - nn.Abs()
+    net = nn.gModule({input_,GT_,flowBy2,flowBy4},{errBy2,errBy4})
+    return net
+end
 
 function dewarp_multiStep(input_nc, output_nc, ngf, height, width, nLevels)
     local netG = nil

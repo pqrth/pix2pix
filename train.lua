@@ -54,7 +54,8 @@ opt = {
    lambda = 100,               -- weight on L1 term in objective
    useTPS = 0,
    nScales = 3,
-   pad = 0,                    -- set non zero to pad by that much margin 
+   pad = 0,                    -- set non zero to pad by that much margin
+   useSobel = 0, 
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -122,6 +123,9 @@ function defineG(input_nc, output_nc, ngf)
     return netG
 end
 
+netLoss = define_loss(opt.fineSize+opt.pad*2,opt.fineSize+opt.pad*2)
+netLoss:apply(weights_init)
+
 function defineD(input_nc, output_nc, ndf)
     local netD = nil
     if opt.condition_GAN==1 then
@@ -161,6 +165,8 @@ print(netD)
 local criterion = nn.BCECriterion()
 local criterionAE = nn.AbsCriterion()
 local criterionSobel = nn.AbsCriterion()
+local criterionAEby2 = nn.AbsCriterion()
+local criterionAEby4 = nn.AbsCriterion()
 ---------------------------------------------------------------------------
 optimStateG = {
    learningRate = opt.lr,
@@ -176,6 +182,9 @@ local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize+pad*2, opt.fin
 local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_offsetSobel = torch.Tensor(opt.batchSize, 2, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local fake_offsets = torch.Tensor(opt.batchSize, 2, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local fake_offsetsBy2 = torch.Tensor(opt.batchSize, 2, (opt.fineSize+pad*2)/2, (opt.fineSize+pad*2)/2):fill(0)
+local fake_offsetsBy4 = torch.Tensor(opt.batchSize, 2, (opt.fineSize+pad*2)/4, (opt.fineSize+pad*2)/4):fill(0)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local errD, errG, errL1, errSobel = 0, 0, 0, 0
@@ -191,10 +200,12 @@ if opt.gpu > 0 then
    real_A = real_A:cuda();
    real_B = real_B:cuda(); fake_B = fake_B:cuda();
    real_AB = real_AB:cuda(); fake_AB = fake_AB:cuda();
+   fake_offsetSobel:cuda(); fake_offsets:cuda(); fake_offsetsBy2:cuda(); fake_offsetsBy4:cuda();
    if opt.cudnn==1 then
-      netG = util.cudnn(netG); netD = util.cudnn(netD);
+      netG = util.cudnn(netG); netD = util.cudnn(netD); netLoss = util.cudnn(netLoss);
    end
-   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda();
+   netLoss:cuda();
+   netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda(); criterionAEby2:cuda(); criterionAEby4:cuda();
    print('done')
 else
 	print('running model on CPU')
@@ -255,6 +266,9 @@ function createRealFake()
     local netGoutput = netG:forward(real_A)
     fake_B = netGoutput[1]
     fake_offsetSobel = netGoutput[2]
+    fake_offsets = netGoutput[3]
+    fake_offsetsBy2 = netGoutput[4]
+    fake_offsetsBy4 = netGoutput[5]
     
     if opt.condition_GAN==1 then
         fake_AB = torch.cat(real_A,fake_B,2)
@@ -336,15 +350,48 @@ local fGx = function(x)
     errSobel = criterionSobel:forward(fake_offsetSobel, zero_sobel)
     df_sobel_ = criterionSobel:backward(fake_offsetSobel, zero_sobel) 
     df_sobel_ = df_sobel_:mul(opt.lambda)
+
+    local lossTensor = netLoss:forward({real_A,real_B,fake_offsetsBy2,fake_offsetsBy4})
+    local lossTensorBy2 = lossTensor[1]
+    local lossTensorBy4 = lossTensor[2]
+    local zero_by2 = lossTensorBy2:clone():fill(0)
+    local zero_by4 = lossTensorBy4:clone():fill(0)
+    local errLossBy2 = criterionAEby2:forward(lossTensorBy2,zero_by2)
+    local errLossBy4 = criterionAEby4:forward(lossTensorBy4,zero_by4)
+    local df_by2_ = criterionAEby2:backward(lossTensorBy2,zero_by2)
+    local df_by4_ = criterionAEby4:backward(lossTensorBy4,zero_by4)
+    local df_offsets_ = netLoss:updateGradInput({real_A,real_B,fake_offsetsBy2,fake_offsetsBy4},{df_by2_,df_by4_})
+    local df_offsetsBy2_ = df_offsets_[3]:mul(opt.lambda)
+    local df_offsetsBy4_ = df_offsets_[4]:mul(opt.lambda)
+
    
-    local df__ = df_dg + df_do_AE:mul(opt.lambda) 
-    netG:backward(real_A, {df__, df_sobel_:clone():fill(0)})
-    
+    local df__ = df_dg + df_do_AE:mul(opt.lambda)
+    if opt.useSobel == 0 then 
+      netG:backward(real_A, {df__, df_sobel_:clone():fill(0),df_sobel_:clone():fill(0), df_offsetsBy2_,df_offsetsBy4_})
+    else
+      netG:backward(real_A, {df__, df_sobel_, df_sobel_:clone():fill(0), df_offsetsBy2_,df_offsetsBy4_})
+    end
     return errG, gradParametersG
 end
 
-
-
+require 'image';
+function Offsets2HSV(offsets)
+    local nDim = offsets:size():size()
+    local xOffsets = offsets:select(nDim-2,2)
+    local yOffsets = offsets:select(nDim-2,1)
+    local mag = torch.sqrt(torch.pow(xOffsets,2)+torch.pow(yOffsets,2))
+    mag = mag/mag:max()
+    local ang = torch.atan2(yOffsets,xOffsets)
+    ang = (ang*180)/math.pi
+    ang = ang/ang:max()
+    local shape = offsets:size()
+    shape[nDim-2] = 3
+    local hsv = torch.Tensor(shape):typeAs(offsets):fill(1)
+    hsv:select(nDim-2,1)[{}] = ang
+    hsv:select(nDim-2,3)[{}] = mag
+    local hsvrgb = image.hsv2rgb(hsv)
+    return hsvrgb
+end
 
 -- train
 local best_err = nil
@@ -429,8 +476,8 @@ for epoch = 1, opt.niter do
                     end
                 else
                     for i2=1, fake_B:size(1) do
-                        if image_out==nil then image_out = torch.cat(util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),3)
-                        else image_out = torch.cat(image_out, torch.cat(util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),3), 2) end
+                        if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),Offsets2HSV(fake_offsets[i2]:float())},3)
+                        else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),Offsets2HSV(fake_offsets[i2]:float())},3), 2) end
                     end
                 end
             end
