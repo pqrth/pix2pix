@@ -421,7 +421,7 @@ function dewarp_multiscale(input_nc, output_nc, ngf, height, width, nLevels)
     local offsetSobelY_2 = offsets - nn.SobelYConv(2,2) - nn.Abs()
     local offsetSobel = {offsetSobelX_2,offsetSobelY_2} - nn.CAddTable() nn.MulConstant(0.5)
  
-    netG = nn.gModule({input},{output,offsetSobel,offsets,flowArr[nLevels-1],flowArr[nLevels-2]})
+    netG = nn.gModule({input},{output,offsetSobel,offsets})
     return netG
 
 end
