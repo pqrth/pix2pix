@@ -2,7 +2,6 @@
 --
 -- code derived from https://github.com/soumith/dcgan.torch
 --
-
 require 'torch'
 require 'nn'
 require 'optim'
@@ -11,6 +10,12 @@ require 'image'
 require 'models'
 require 'warp2d'
 require 'os'
+cv = require 'cv';
+require 'cv.photo';
+require 'cv.imgcodecs';
+require 'cv.highgui';
+require 'cv.imgproc';
+flowX = require 'flowExtensions'
 
 opt = {
    DATA_ROOT = '',         -- path to images (should have subfolders 'train', 'val', etc)
@@ -161,6 +166,7 @@ print(netD)
 local criterion = nn.BCECriterion()
 local criterionAE = nn.AbsCriterion()
 local criterionSobel = nn.AbsCriterion()
+local criterionMSE_offsets = nn.MSECriterion()
 ---------------------------------------------------------------------------
 optimStateG = {
    learningRate = opt.lr,
@@ -175,11 +181,13 @@ pad = opt.pad
 local real_A = torch.Tensor(opt.batchSize, input_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local real_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_B = torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local warp_reverted =  torch.Tensor(opt.batchSize, output_nc, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_offsetSobel = torch.Tensor(opt.batchSize, 2, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_offsets = torch.Tensor(opt.batchSize, 2, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
+local real_offsets = torch.Tensor(opt.batchSize, 2, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local real_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
 local fake_AB = torch.Tensor(opt.batchSize, output_nc + input_nc*opt.condition_GAN, opt.fineSize+pad*2, opt.fineSize+pad*2):fill(0)
-local errD, errG, errL1, errSobel = 0, 0, 0, 0
+local errD, errG, errL1, errSobel, errOffsets = 0, 0, 0, 0, 0
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -192,11 +200,14 @@ if opt.gpu > 0 then
    real_A = real_A:cuda();
    real_B = real_B:cuda(); fake_B = fake_B:cuda();
    real_AB = real_AB:cuda(); fake_AB = fake_AB:cuda();
-   fake_offsets:cuda();
+   warp_reverted = warp_reverted:cuda();
+   fake_offsets = fake_offsets:cuda();
+   real_offsets = real_offsets:cuda();
    if opt.cudnn==1 then
       netG = util.cudnn(netG); netD = util.cudnn(netD);
    end
    netD:cuda(); netG:cuda(); criterion:cuda(); criterionAE:cuda(); criterionSobel:cuda();
+   criterionMSE_offsets:cuda();
    print('done')
 else
 	print('running model on CPU')
@@ -221,6 +232,8 @@ function createRealFake()
     --real_A:copy(real_data[{ {}, idx_A, {}, {} }])
     real_A:fill(0)
     real_B:fill(0)
+    warp_reverted:fill(0)
+    real_offsets:fill(0)
     if opt.useTPS == 0 then
 	real_A[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_A, {}, {} }]:clone()
 	real_B[{{},{},{pad+1,pad+opt.fineSize},{pad+1,pad+opt.fineSize}}] = real_data[{ {}, idx_B, {}, {} }]:clone()
@@ -231,18 +244,68 @@ function createRealFake()
     	-- artificial warping (data augmentation)
         for ind = 1, real_A:size(1) do
             local im = torch.Tensor(real_A[ind]:size()):copy(real_A[ind])
-            img1 = torch.zeros(im:size())
-            scaleSize = torch.floor(im:size()[2]*torch.uniform(0.6,1))
-            padng = torch.floor((im:size()[2]-scaleSize)/2)
+            local img1 = torch.zeros(im:size())
+            local scaleSize = torch.floor(im:size()[2]*torch.uniform(0.6,1))
+            local padng = torch.floor((im:size()[2]-scaleSize)/2)
             im = image.scale(im, scaleSize,'bilinear')
             img1[{{},{padng+1,padng+scaleSize},{padng+1,padng+scaleSize}}] = im[{{},{},{}}]
             real_B[ind]:copy(img1)
 
-            img1 = image.rotate(img1,torch.bernoulli(0.6)*0.24*(torch.uniform()*2-1),'bilinear')
+            --rand_rot_ang = torch.bernoulli(0.6)*0.24*(torch.uniform()*2-1)
+            --img1 = image.rotate(img1,rand_rot_ang,'bilinear')
             im = img1
+            local pts_anchor, pts_def, warpfield, src_coords = nil, nil, nil, nil
             pts_anchor, pts_def = warp2d.gen_warp_pts(im:size(), 5, 12)
-            im, warpfield = warp2d.warp(im, pts_anchor, pts_def)
+            im, warpfield, src_coords = warp2d.warp(im, pts_anchor, pts_def)
             real_A[ind]:copy(im)
+            local dummy_img = torch.Tensor(im:size()):fill(0)
+            local warpfield_inv = torch.Tensor(warpfield:size()):fill(0)
+            local mask = torch.Tensor(im[1]:size()):fill(1)
+            src_coords = src_coords:double()
+            local im_warp=im:clone():double()
+
+    local src_coords_data = src_coords:data()
+    local warpfield_data = warpfield:data()
+    local mask_data = mask:data()
+    local warpfield_inv_data = warpfield_inv:data()
+    local height = im_warp:size(2)
+    local width = im_warp:size(3)
+    local nPixels = height*width
+    
+    for i=0,nPixels-1 do
+        x = src_coords_data[i]
+        y = src_coords_data[nPixels+i]
+        if y>=1 and y<=height and x>=1 and x<=width then
+            local yint = math.floor(y)
+            local xint = math.floor(x)
+            local ind = (yint-1)*width+xint-1
+            mask_data[ind] = 0
+            warpfield_inv_data[ind] = -warpfield_data[i]
+            warpfield_inv_data[nPixels+ind] = -warpfield_data[nPixels+i]
+        end
+    end
+    
+    -- interpolating warpfield_inv
+    local mask_8 = mask:byte()
+    local min_warpfield_inv = warpfield_inv:min()
+    local max_warpfield_inv = warpfield_inv:max()
+    local warpfield_inv_8 = ((warpfield_inv-min_warpfield_inv)*255)/(max_warpfield_inv-min_warpfield_inv)
+    warpfield_inv_8 = warpfield_inv_8:byte()
+    local warpfield_inv_8_1 = cv.inpaint{warpfield_inv_8[1], mask_8, dst=nil, inpaintRadius=1, flags=cv.INPAINT_TELEA}
+    local warpfield_inv_8_2 = cv.inpaint{warpfield_inv_8[2], mask_8, dst=nil, inpaintRadius=1, flags=cv.INPAINT_TELEA}
+    warpfield_inv_8[{1,{},{}}] = warpfield_inv_8_1[{{},{}}]
+    warpfield_inv_8[{2,{},{}}] = warpfield_inv_8_2[{{},{}}]
+    warpfield_inv_8 = warpfield_inv_8:double()
+    warpfield_inv = (warpfield_inv_8*(max_warpfield_inv-min_warpfield_inv)/255.0) + min_warpfield_inv
+    local warpfield_inv_gvnn = warpfield_inv/128.0
+
+            dummy_img = image.warp(im_warp,warpfield_inv)
+            --dummy_img, warpfield_inv =  warp2d.warp(dummy_img,pts_def,pts_anchor)
+            --r_offset = warpfield_inv;
+            real_offsets[ind]:copy(warpfield_inv_gvnn)
+            warp_reverted[ind]:copy(dummy_img)
+
+            
         end
     end
 --    print('done createrealfake')
@@ -340,8 +403,13 @@ local fGx = function(x)
     df_sobel_ = criterionSobel:backward(fake_offsetSobel, zero_sobel) 
     df_sobel_ = df_sobel_:mul(opt.lambda)
    
+    local df_offets_ = fake_offsets:clone():fill(0)
+    errOffsets = criterionMSE_offsets:forward(fake_offsets,real_offsets)
+    local df_offsets_ = criterionMSE_offsets:backward(fake_offsets,real_offsets)
+    df_offsets_ = df_offsets_:mul(opt.lambda)
+
     local df__ = df_dg + df_do_AE:mul(opt.lambda) 
-    netG:backward(real_A, {df__, df_sobel_:clone():fill(0), df_sobel_:clone():fill(0)})
+    netG:backward(real_A, {df__:clone():fill(0), df_sobel_:clone():fill(0), df_offsets_})
     
     return errG, gradParametersG
 end
@@ -350,7 +418,9 @@ function Offsets2HSV(offsets)
     local nDim = offsets:size():size()
     local xOffsets = offsets:select(nDim-2,2)
     local yOffsets = offsets:select(nDim-2,1)
-    local mag = torch.sqrt(torch.pow(xOffsets,2)+torch.pow(yOffsets,2))
+    local hsvrgb = flowX.xy2rgb(xOffsets,yOffsets)
+    hsvrgb = hsvrgb:typeAs(offsets)
+    --[[local mag = torch.sqrt(torch.pow(xOffsets,2)+torch.pow(yOffsets,2))
     mag = mag/mag:max()
     local ang = torch.atan2(yOffsets,xOffsets)
     ang = ((ang*180)/math.pi+360)%360
@@ -360,7 +430,7 @@ function Offsets2HSV(offsets)
     local hsv = torch.Tensor(shape):typeAs(offsets):fill(1)
     hsv:select(nDim-2,1)[{}] = ang
     hsv:select(nDim-2,3)[{}] = mag
-    local hsvrgb = image.hsv2rgb(hsv)
+    local hsvrgb = image.hsv2rgb(hsv)]]--
     return hsvrgb
 end
 
@@ -429,7 +499,7 @@ for epoch = 1, opt.niter do
       
         -- write display visualization to disk
         --  runs on the first batchSize images in the opt.phase set
-        if counter % opt.save_display_freq == 0 and opt.display then
+        if (counter-1) % opt.save_display_freq == 0 and opt.display then
             local serial_batches=opt.serial_batches
             opt.serial_batches=1
             opt.serial_batch_iter=1
@@ -448,8 +518,8 @@ for epoch = 1, opt.niter do
                     end
                 else
                     for i2=1, fake_B:size(1) do
-                        if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),Offsets2HSV(fake_offsets[i2]:float())},3)
-                        else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),Offsets2HSV(fake_offsets[i2]:float())},3), 2) end
+                        if image_out==nil then image_out = torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),Offsets2HSV(fake_offsets[i2]:float()),util.deprocess(warp_reverted[i2]:float()),Offsets2HSV(real_offsets[i2]:float())},3)
+                        else image_out = torch.cat(image_out, torch.cat({util.deprocess(real_A[i2]:float()),util.deprocess(fake_B[i2]:float()),Offsets2HSV(fake_offsets[i2]:float()),util.deprocess(warp_reverted[i2]:float()),Offsets2HSV(real_offsets[i2]:float())},3), 2) end
                     end
                 end
             end
@@ -460,14 +530,14 @@ for epoch = 1, opt.niter do
         
         -- logging and display plot
         if counter % opt.print_freq == 0 then
-            local loss = {errG=errG and errG or -1, errD=errD and errD or -1, errL1=errL1 and errL1 or -1, errSobel=errSobel and errSobel or -1}
+            local loss = {errG=errG and errG or -1, errD=errD and errD or -1, errL1=errL1 and errL1 or -1, errSobel=errSobel and errSobel or -1, errOffsets=errOffsets and errOffsets or -1}
             local curItInBatch = ((i-1) / opt.batchSize)
             local totalItInBatch = math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize)
             print(('Epoch: [%d][%8d / %8d]\t Time: %.3f  DataTime: %.3f  '
-                    .. '  Err_G: %.4f  Err_D: %.4f  ErrL1: %.4f ErrSobel: %.4f'):format(
+                    .. '  Err_G: %.4f ErrL1: %.4f ErrSobel: %.4f ErrOffsets: %.4f'):format(
                      epoch, curItInBatch, totalItInBatch,
                      tm:time().real / opt.batchSize, data_tm:time().real / opt.batchSize,
-                     errG, errD, errL1, errSobel))
+                     errG, errL1, errSobel, errOffsets))
            
             local plot_vals = { epoch + curItInBatch / totalItInBatch }
             for k, v in ipairs(opt.display_plot) do

@@ -299,8 +299,8 @@ function defineG_unet_flowPrediction(input_nc, output_nc, ngf, nLayers)
 
     local dLayerJoin = {decArr_[nLayers-1],encArr[1]} - nn.JoinTable(2)
     local spfullconv_zero = nn.SpatialFullConvolution(ngf * 2, 2, 4, 4, 2, 2, 1, 1)
-    spfullconv_zero.weight:fill(0.0)
-    spfullconv_zero.bias:fill(0.0)    
+--    spfullconv_zero.weight:fill(0.0)
+--    spfullconv_zero.bias:fill(0.0)    
     decArr_[nLayers] = dLayerJoin - nn.ReLU(true) - spfullconv_zero
     
     local flowOffsets = {decArr_[nLayers],input_flowOffsets} - nn.CAddTable()

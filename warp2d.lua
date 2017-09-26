@@ -95,7 +95,9 @@ function warp2d.warp(im_in, pts_in, pts_def, method)
     
     local warpfield = torch.add(coords:typeAs(coords_orig),-coords_orig)
     local img_out = image.warp(im_in, warpfield)
-    return img_out, warpfield    
+    local warpfield_ = torch.cat(warpfield[2],warpfield[1],1)
+    coords = coords_orig + warpfield_
+    return img_out, warpfield, coords    
 end
 
 function warp2d.gen_warp_pts(imsize, ndefpts, stdev_factor)
